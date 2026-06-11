@@ -2,7 +2,7 @@
 # Render dashboard -> New -> Blueprint -> pick the repo. See DEPLOY_RENDER.md.
 services:
   - type: web
-    name: turbulence-monitor-madhav
+    name: madhav-turbulence-monitor
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
