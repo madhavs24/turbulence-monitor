@@ -2,7 +2,7 @@
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-$RepoOwner = "Madhav-Singh"
+$RepoOwner = "madhavs24"
 $RepoName = "turbulence-monitor"
 $RemoteUrl = "https://github.com/$RepoOwner/$RepoName.git"
 $RepoApi = "https://api.github.com/repos/$RepoOwner/$RepoName"
