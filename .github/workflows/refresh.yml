@@ -32,5 +32,6 @@ jobs:
             echo "no change"
           else
             git commit -m "chore: daily snapshot refresh [skip ci]"
+            git pull --rebase
             git push
           fi
