@@ -26,6 +26,15 @@ PANEL = PROC / "panel.parquet"
 # so the website can honestly label demo data even under mode="auto".
 LAST_SOURCE = {"value": None}
 
+REQUIRED_LIVE_COLS = frozenset({"SPY", "vix", "hy_oas", "y10", "y2"})
+MIN_PANEL_ROWS = 500
+
+
+def _panel_usable(panel: pd.DataFrame) -> bool:
+    if panel is None or len(panel) < MIN_PANEL_ROWS:
+        return False
+    return REQUIRED_LIVE_COLS.issubset(panel.columns)
+
 
 def _fred(series_id: str) -> pd.Series:
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
@@ -136,6 +145,11 @@ def get_panel(mode: str = "auto") -> pd.DataFrame:
         panel = build_synthetic(); panel.to_parquet(PANEL); return panel
     try:
         panel = build_live()
+        if not _panel_usable(panel):
+            raise RuntimeError(
+                f"partial live panel ({panel.shape[0]} rows x {panel.shape[1]} cols); "
+                f"missing {sorted(REQUIRED_LIVE_COLS - set(panel.columns))}"
+            )
         LAST_SOURCE["value"] = "live"
         panel.to_parquet(PANEL)
         log(f"panel saved: {panel.shape[0]} rows x {panel.shape[1]} cols -> {PANEL}")
@@ -143,7 +157,7 @@ def get_panel(mode: str = "auto") -> pd.DataFrame:
     except Exception as e:
         if mode == "live":
             raise
-        log(f"LIVE fetch failed ({e}); using synthetic panel for this run.")
+        log(f"LIVE fetch failed or partial ({e}); using synthetic panel for this run.")
         LAST_SOURCE["value"] = "synthetic"
         panel = build_synthetic(); panel.to_parquet(PANEL); return panel
 

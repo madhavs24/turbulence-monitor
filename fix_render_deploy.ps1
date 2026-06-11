@@ -1,12 +1,12 @@
 # Fix Render serving the wrong app (Turbulence v3 instead of Market Turbulence Monitor)
 $ErrorActionPreference = "Stop"
-$Url = "https://turbulence-monitor.onrender.com"
+$Url = "https://turbulence-monitor-madhav.onrender.com"
 
 Write-Host ""
 Write-Host "=== Render deploy mismatch fix ==="
 Write-Host ""
-Write-Host "Your URL still serves 'Turbulence v3' (API: /api/state, health: status=ok)."
-Write-Host "The GitHub repo serves 'Market Turbulence Monitor' (API: /api/snapshot, health: ok/updated/error)."
+Write-Host "Old URL turbulence-monitor.onrender.com may still serve Turbulence v3."
+Write-Host "New service URL: $Url (Market Turbulence Monitor from madhavs24/turbulence-monitor)."
 Write-Host ""
 
 function Test-CorrectApp {

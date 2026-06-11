@@ -2,10 +2,12 @@
 
 Usage:
   python -m tests.verify_deploy
-  DEPLOY_URL=https://turbulence-monitor.onrender.com python -m tests.verify_deploy
+  python -m tests.verify_deploy --base-url http://127.0.0.1:8765
+  DEPLOY_URL=https://turbulence-monitor-madhav.onrender.com python -m tests.verify_deploy
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -15,10 +17,11 @@ import urllib.request
 
 from web.engine_api import build_snapshot
 
-DEPLOY_URL = os.environ.get("DEPLOY_URL", "https://turbulence-monitor.onrender.com").rstrip("/")
+DEFAULT_URL = "https://turbulence-monitor-madhav.onrender.com"
 APP_ID = "market-turbulence-monitor"
 PASS: list[str] = []
 FAIL: list[str] = []
+DEPLOY_URL = DEFAULT_URL
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -28,8 +31,15 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"  [{tag}] {name}{extra}")
 
 
+def _last_val(series):
+    s = series.dropna()
+    return float(s.iloc[-1]) if len(s) else None
+
+
 def fetch(path: str, timeout: int = 30) -> tuple[int, dict | str]:
-    req = urllib.request.Request(f"{DEPLOY_URL}{path}", headers={"User-Agent": "turbulence-verify-deploy"})
+    req = urllib.request.Request(
+        f"{DEPLOY_URL}{path}", headers={"User-Agent": "turbulence-verify-deploy"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8", errors="replace")
@@ -65,7 +75,33 @@ def wait_for_snapshot(max_wait: int = 120) -> dict | None:
     return None
 
 
+def check_sse_stream(timeout: int = 15) -> bool:
+    url = f"{DEPLOY_URL}/api/stream"
+    req = urllib.request.Request(url, headers={"User-Agent": "turbulence-verify-deploy", "Accept": "text/event-stream"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            chunk = resp.read(4096).decode("utf-8", errors="replace")
+            return "data:" in chunk
+    except Exception as e:
+        check("/api/stream SSE", False, str(e))
+        return False
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Verify deployed Turbulence Monitor")
+    p.add_argument(
+        "--base-url",
+        default=os.environ.get("DEPLOY_URL", DEFAULT_URL),
+        help="Base URL of deployed service (default: turbulence-monitor-madhav.onrender.com)",
+    )
+    return p.parse_args()
+
+
 def main() -> int:
+    global DEPLOY_URL
+    args = parse_args()
+    DEPLOY_URL = args.base_url.rstrip("/")
+
     print("=" * 70)
     print(f"DEPLOY VERIFICATION: {DEPLOY_URL}")
     print("=" * 70)
@@ -114,10 +150,14 @@ def main() -> int:
         check("papertrade has stats", "stats" in pt)
         check("papertrade has curves", "curves" in pt)
 
-    print("\n6. Engine parity (local vs deployed)")
+    print("\n6. SSE stream")
+    check("/api/stream delivers events", check_sse_stream())
+
+    print("\n7. Engine parity (local vs deployed)")
     if snap and "outlook" in snap:
         try:
-            local, _, signals = build_snapshot("auto")
+            parity_mode = "synthetic" if snap.get("data_source") == "synthetic" else "auto"
+            local, _, signals = build_snapshot(parity_mode)
             lo, so = local["outlook"], snap["outlook"]
             check(
                 "flare_prob_pct matches engine",
@@ -144,12 +184,16 @@ def main() -> int:
                 lo.get("turbulence_band") == so.get("turbulence_band"),
                 f"local={lo.get('turbulence_band')} deploy={so.get('turbulence_band')}",
             )
-            eng_flare = round(float(signals["flare_prob"].dropna().iloc[-1]) * 100, 1)
-            check(
-                "deployed flare% == raw engine flare_prob",
-                so.get("flare_prob_pct") == eng_flare,
-                f"site={so.get('flare_prob_pct')} engine={eng_flare}",
-            )
+            flare_raw = _last_val(signals["flare_prob"])
+            if flare_raw is None:
+                check("deployed flare% == raw engine flare_prob", False, "no flare_prob")
+            else:
+                eng_flare = round(flare_raw * 100, 1)
+                check(
+                    "deployed flare% == raw engine flare_prob",
+                    so.get("flare_prob_pct") == eng_flare,
+                    f"site={so.get('flare_prob_pct')} engine={eng_flare}",
+                )
         except Exception as e:
             check("local engine parity run", False, f"{type(e).__name__}: {e}")
     else:
@@ -160,9 +204,8 @@ def main() -> int:
     if FAIL:
         print("  FAILED:", FAIL)
         print("\nIf health shows app!=market-turbulence-monitor or /api/snapshot is 404,")
-        print("Render is serving the wrong app. In the dashboard:")
-        print("  - Confirm repo = madhavs24/turbulence-monitor, branch = main, runtime = Docker")
-        print("  - Manual Deploy -> Deploy latest commit")
+        print("Render is serving the wrong app. Use Blueprint -> turbulence-monitor-madhav")
+        print("or confirm repo = madhavs24/turbulence-monitor, branch = main, runtime = Docker")
     print("=" * 70)
     return 0 if not FAIL else 1
 

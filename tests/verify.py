@@ -26,6 +26,10 @@ def check(name, ok, detail=""):
     (PASS if ok else FAIL).append(name)
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}{(' — '+detail) if detail else ''}")
 
+def _last_val(series):
+    s = series.dropna()
+    return float(s.iloc[-1]) if len(s) else None
+
 def auc(score, label):
     s = pd.concat([score, label], axis=1).dropna(); s.columns=["s","y"]
     pos=s[s['y']==1]['s'].values; neg=s[s['y']==0]['s'].values
@@ -124,12 +128,24 @@ print("\n"+"="*70); print("F. WEBSITE ACCURACY — what the API serves == what t
 from web.engine_api import build_snapshot
 snap,f2,s2 = build_snapshot("synthetic" if mode=="synthetic" else "auto")
 o=snap['outlook']
-eng_flare = round(float(s2['flare_prob'].dropna().iloc[-1])*100,1)
-check("website flare% == engine flare_prob", o['flare_prob_pct']==eng_flare, f"site {o['flare_prob_pct']} vs engine {eng_flare}")
-eng_anom_p = round(float(s2['anom_p'].dropna().iloc[-1]),4)
-check("website anomaly p == engine anom_p", o['anomaly']['p_value']==eng_anom_p, f"site {o['anomaly']['p_value']} vs engine {eng_anom_p}")
-eng_vix = round(float(f2['vix'].dropna().iloc[-1]),1)
-check("website VIX == engine latest VIX", snap['outlook']['vix']==eng_vix, f"site {snap['outlook']['vix']} vs engine {eng_vix}")
+flare_raw = _last_val(s2['flare_prob'])
+if flare_raw is None:
+    check("website flare% == engine flare_prob", False, "no flare_prob — partial panel")
+else:
+    eng_flare = round(flare_raw * 100, 1)
+    check("website flare% == engine flare_prob", o['flare_prob_pct']==eng_flare, f"site {o['flare_prob_pct']} vs engine {eng_flare}")
+anom_raw = _last_val(s2['anom_p'])
+if anom_raw is None:
+    check("website anomaly p == engine anom_p", False, "no anom_p — partial panel")
+else:
+    eng_anom_p = round(anom_raw, 4)
+    check("website anomaly p == engine anom_p", o['anomaly']['p_value']==eng_anom_p, f"site {o['anomaly']['p_value']} vs engine {eng_anom_p}")
+vix_raw = _last_val(f2['vix'])
+if vix_raw is None:
+    check("website VIX == engine latest VIX", False, "no vix — partial panel")
+else:
+    eng_vix = round(vix_raw, 1)
+    check("website VIX == engine latest VIX", snap['outlook']['vix']==eng_vix, f"site {snap['outlook']['vix']} vs engine {eng_vix}")
 check("website calibration uses full out-of-sample history", snap['calibration']['n']>200, f"n={snap['calibration']['n']}")
 check("website honestly labels demo vs live data", snap['data_source'] in ("synthetic","live"), snap['data_source'])
 
