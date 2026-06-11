@@ -11,11 +11,18 @@ on:
 permissions:
   contents: write               # needed to commit the snapshot back to the repo
 
+concurrency:
+  group: refresh-snapshot
+  cancel-in-progress: false     # never cancel a half-finished snapshot commit
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4.1.7
+        with:
+          ref: main
+          fetch-depth: 0          # full history so rebase before push works
       - uses: actions/setup-python@v5.1.0
         with:
           python-version: "3.11"
@@ -30,8 +37,17 @@ jobs:
           git add web/static/snapshot.json
           if git diff --staged --quiet; then
             echo "no change"
-          else
-            git commit -m "chore: daily snapshot refresh [skip ci]"
-            git pull --rebase
-            git push
+            exit 0
           fi
+          git commit -m "chore: daily snapshot refresh [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase origin main
+            if git push origin HEAD:main; then
+              echo "pushed on attempt ${attempt}"
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}); retrying after rebase..."
+            sleep $((attempt * 2))
+          done
+          echo "failed to push snapshot after 5 attempts"
+          exit 1
