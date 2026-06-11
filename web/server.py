@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from .cache import STORE
 from src.simulator import run as run_sim, STRATEGIES
@@ -15,20 +16,34 @@ from src.live_news import LiveNews
 
 LIVE = LiveNews()
 LIVE_MODE = os.environ.get("LIVE_NEWS_MODE", "live")   # 'live' RSS, or 'replay' (offline)
+SSE_ONLY = os.environ.get("SSE_ONLY", "").lower() in ("1", "true", "yes")
+VERSION = "1.0.0"
+APP_ID = "market-turbulence-monitor"
+SNAPSHOT_FILE = Path(__file__).resolve().parent / "static" / "snapshot.json"
+
+
+def _static_snapshot_meta():
+    if not SNAPSHOT_FILE.exists():
+        return None, None
+    try:
+        data = json.loads(SNAPSHOT_FILE.read_text(encoding="utf-8"))
+        return data.get("data_source"), data.get("as_of") or data.get("generated_at")
+    except Exception:
+        return None, None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # build the first snapshot in the background so the server starts instantly,
-    # then keep refreshing on a timer.
-    threading.Thread(target=STORE.refresh, daemon=True).start()
-    STORE.start_background()
-    # start the real-time news producer on the event loop
+    if not SSE_ONLY:
+        threading.Thread(target=STORE.refresh, daemon=True).start()
+        STORE.start_background()
     asyncio.create_task(LIVE.run(LIVE_MODE, speed=float(os.environ.get("LIVE_SPEED", "1"))))
     yield
 
 
 app = FastAPI(title="Market Turbulence Monitor", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
+                   allow_headers=["*"])   # lets a CDN-hosted frontend reach the SSE stream
 STATIC = Path(__file__).resolve().parent / "static"
 
 
@@ -57,30 +72,40 @@ def papertrade(strategies: str = Query(",".join(STRATEGIES)),
     return {"stats": {s: stats[s] for s in want}, "dates": dates, "curves": series}
 
 
-APP_ID = "market-turbulence-monitor"
-VERSION = "1.0.0"
-APP_VERSION = VERSION
-
-
 @app.get("/api/health")
 def health():
+    if SSE_ONLY:
+        data_source, as_of = _static_snapshot_meta()
+        return {
+            "ok": True,
+            "app": APP_ID,
+            "version": VERSION,
+            "data_source": data_source,
+            "as_of": as_of,
+            "turb_mode": os.environ.get("TURB_MODE", "auto"),
+            "live_news_mode": LIVE_MODE,
+            "sse_only": True,
+            "updated": as_of,
+            "error": None,
+        }
     snap, updated, err = STORE.get()
-    data_source = snap.get("data_source") if snap else None
-    return {
-        "app": APP_ID,
-        "version": VERSION,
-        "ok": snap is not None,
-        "updated": updated,
-        "error": err,
-        "data_source": data_source,
-        "turb_mode": os.environ.get("TURB_MODE", "auto"),
-        "live_news_mode": LIVE_MODE,
-    }
+    return {"ok": snap is not None, "app": APP_ID, "version": VERSION,
+            "data_source": (snap or {}).get("data_source"),
+            "turb_mode": os.environ.get("TURB_MODE", "auto"),
+            "live_news_mode": LIVE_MODE, "updated": updated, "error": err}
 
 
 @app.get("/api/version")
 def version():
-    return {"app": APP_ID, "version": VERSION, "title": "Market Turbulence Monitor"}
+    return {"app": APP_ID, "version": VERSION}
+
+
+@app.get("/snapshot.json")
+def snapshot_file():
+    f = STATIC / "snapshot.json"
+    if f.exists():
+        return FileResponse(f, headers={"Cache-Control": "no-cache"})
+    return JSONResponse({"error": "snapshot not built yet"}, status_code=404)
 
 
 @app.get("/api/live/recent")
@@ -93,7 +118,8 @@ def live_recent():
 async def stream(request: Request):
     q = await LIVE.bc.subscribe()
     async def gen():
-        for ev in list(LIVE.recent)[-15:]:          # small backlog so a fresh page isn't empty
+        # send a small backlog so a fresh page isn't empty
+        for ev in list(LIVE.recent)[-15:]:
             yield {"data": json.dumps(ev)}
         try:
             while True:
@@ -108,7 +134,7 @@ async def stream(request: Request):
 
 @app.get("/")
 def index():
-    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
+    return FileResponse(STATIC / "index.html")
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")

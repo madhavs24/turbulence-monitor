@@ -5,8 +5,11 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Market Turbulence Monitor</title>
 <meta name="description" content="An honest, free, demo-money market turbulence monitor. Detects stress and turbulence — not price direction.">
-<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="styles.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<!-- When hosting this frontend on a CDN (Netlify/Pages), set your Render URL here so the
+     Live Pulse can reach the SSE stream. Leave "" if the Render app serves this page itself. -->
+<script>window.LIVE_BASE = "";</script>
 </head>
 <body>
 <header class="top"><div class="wrap">
@@ -48,13 +51,18 @@ const BAND={Calm:'var(--calm)',Watch:'var(--watch)',Elevated:'var(--elevated)',H
 const $=(s,el=document)=>el.querySelector(s);
 const el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e;};
 let SNAP=null, charts={};
+const LIVE_BASE=(window.LIVE_BASE||'').replace(/\/+$/,'');  // set window.LIVE_BASE to your Render URL when the frontend is on a CDN
 
 async function boot(){
   try{
-    const r=await fetch('/api/snapshot'); const d=await r.json();
-    if(!d.ready){ $('#boot').textContent='Engine warming up… '+(d.error||'')+' — retrying'; return setTimeout(boot,4000);}
+    let d=null;
+    // static-first: the committed daily artifact loads instantly from the CDN
+    try{ const r=await fetch('snapshot.json',{cache:'no-cache'}); if(r.ok) d=await r.json(); }catch(_){}
+    // fallback: a live API snapshot (when the Render app serves the page directly)
+    if(!d){ const r=await fetch((LIVE_BASE||'')+'/api/snapshot'); const j=await r.json();
+      if(!j.ready){ $('#boot').textContent='Warming up…'; return setTimeout(boot,4000); } d=j; }
     SNAP=d; render(d);
-  }catch(e){ $('#boot').textContent='Could not reach the engine. Is the server running?'; }
+  }catch(e){ $('#boot').textContent='Could not load data.'; }
 }
 
 function destroyCharts(){
@@ -67,7 +75,7 @@ function render(d){
   const demo = (d.data_source==='synthetic');
   $('#modeTag').textContent = demo ? '(demo data)' : '(live)';
   $('#modeTag').style.color = demo ? 'var(--watch)' : 'var(--calm)';
-  $('#updated').textContent = 'updated '+ new Date(d.updated).toLocaleString();
+  $('#updated').textContent = (d.as_of?('as of '+d.as_of):'') + (d.generated_at?(' · refreshed '+new Date(d.generated_at).toLocaleString()):(d.updated?(' · '+new Date(d.updated).toLocaleString()):''));
   $('#brandDot').style.color = BAND[d.outlook.turbulence_band]||'var(--unknown)';
   destroyCharts();
   const app=$('#app'); app.innerHTML='';
@@ -197,6 +205,15 @@ function whySection(d){
 function anomSection(d){
   const s=el('section'); s.id='anom';
   s.append(el('p','h','Anomaly timeline · click a bar'));
+  const AL=d.anomaly_layers;
+  if(AL){
+    const mk=(name,on,detail)=>`<span class="chip" style="border-color:${on?'var(--high)':'var(--line)'}"><b style="color:${on?'var(--high)':'var(--muted)'}">${on?'● ':'○ '}${name}</b> ${detail||''}</span>`;
+    const row=el('div','chips'); row.style.marginBottom='12px';
+    row.innerHTML = mk('Spike',AL.spike.active, AL.spike.ret_z!=null?`ret ${AL.spike.ret_z}σ / vix ${AL.spike.vix_z}σ`:'')
+      + mk('Conformal',AL.conformal.active, AL.conformal.p!=null?`p=${AL.conformal.p}`:'')
+      + mk('News',AL.news.active,'');
+    s.append(row);
+  }
   const card=el('div','card');
   const tl=el('div','timeline'); const items=d.anomalies;
   if(!items.length) card.append(el('div','muted','No anomalies flagged in the visible window.'));
@@ -245,33 +262,45 @@ function playSection(d){
   card.append(el('div','faint','The honest punchline: signal strategies usually cut the worst drawdown, but don\'t beat simply buying and holding. This is a risk tool, not a money machine.'));
   s.append(card); return s;
 }
-async function runPlay(){
+function runPlay(){
   const statsEl=$('#pgStats');
-  const cash=$('#pgCash')?.value||10000, start=$('#pgStart')?.value||'2012-01-01';
-  const on=[...document.querySelectorAll('.stratbtn.on')].map(b=>b.dataset.s);
-  const strat=on.length?on.join(','):'buy_hold,turbulence';
-  let d;
-  try{
-    const r=await fetch(`/api/papertrade?strategies=${strat}&start=${start}&cash=${cash}`);
-    if(!r.ok) throw new Error('server '+r.status);
-    d=await r.json();
-    if(d.error) throw new Error(d.error);
-  }catch(e){ if(statsEl) statsEl.innerHTML=`<div class="banner warn">Couldn't run the simulation: ${e.message}. Try again in a moment.</div>`; return; }
+  if(!SNAP||!SNAP.sim){ if(statsEl) statsEl.innerHTML='<div class="banner warn">No simulation data in this snapshot.</div>'; return; }
+  const sim=SNAP.sim;
+  const cash=+($('#pgCash')?.value||sim.start_cash||10000);
+  const start=$('#pgStart')?.value||sim.sim_start;
+  let on=[...document.querySelectorAll('.stratbtn.on')].map(b=>b.dataset.s);
+  if(!on.length) on=['buy_hold','turbulence'];
+  let i0=sim.dates.findIndex(x=>x>=start); if(i0<0) i0=0;
+  const dates=sim.dates.slice(i0), ret=sim.ret.slice(i0);
   const colors={buy_hold:'#6aa8ff',vix_rule:'#22c58b',regime:'#f5b942',turbulence:'#ef4d5a',coinflip:'#9aa6c4'};
+  const curves={}, stats={};
+  for(const sname of on){
+    const pos=(sim.positions[sname]||[]).slice(i0);
+    let eq=cash, peak=cash, maxdd=0; const series=[], dr=[];
+    for(let t=0;t<ret.length;t++){ const rr=(pos[t]||0)*ret[t]; eq*=1+rr; series.push(eq); dr.push(rr); peak=Math.max(peak,eq); maxdd=Math.min(maxdd,eq/peak-1); }
+    const n=dr.length, mean=dr.reduce((a,b)=>a+b,0)/Math.max(1,n);
+    const sd=Math.sqrt(dr.reduce((a,b)=>a+(b-mean)*(b-mean),0)/Math.max(1,n-1));
+    const sharpe=sd>0?mean/sd*Math.sqrt(252):0;
+    const yrs=(new Date(dates[dates.length-1])-new Date(dates[0]))/(365.25*864e5)||(n/252);
+    const invested=pos.reduce((a,b)=>a+(b||0),0)/Math.max(1,pos.length);
+    curves[sname]=series;
+    stats[sname]={final_value:Math.round(eq),total_return_pct:+((eq/cash-1)*100).toFixed(1),
+      annual_return_pct:+(((eq/cash)**(1/yrs)-1)*100).toFixed(1),max_drawdown_pct:+(maxdd*100).toFixed(1),
+      sharpe:+sharpe.toFixed(2),pct_time_invested:Math.round(invested*100)};
+  }
+  const step=Math.max(1,Math.floor(dates.length/250));
+  const ld=dates.filter((_,i)=>i%step===0);
   if(charts.pg)charts.pg.destroy();
-  charts.pg=new Chart($('#pgChart'),{type:'line',data:{labels:d.dates,
-    datasets:Object.entries(d.curves).map(([k,v])=>({label:k.replace('_',' '),data:v,
-      borderColor:colors[k],borderWidth:2,pointRadius:0,tension:.1}))},
+  charts.pg=new Chart($('#pgChart'),{type:'line',data:{labels:ld,
+    datasets:on.map(sname=>({label:sname.replace('_',' '),data:curves[sname].filter((_,i)=>i%step===0).map(v=>Math.round(v)),
+      borderColor:colors[sname],borderWidth:2,pointRadius:0,tension:.1}))},
     options:{plugins:{legend:{labels:{color:'#cdd7f0'}}},
       scales:{x:{ticks:{color:'#64718f',maxTicksLimit:6},grid:{color:'#1b2440'}},
         y:{ticks:{color:'#64718f',callback:v=>'$'+(v/1000)+'k'},grid:{color:'#1b2440'}}},
       maintainAspectRatio:false,animation:false}});
-  const st=d.stats;
   let h='<table><tr><th>Strategy</th><th>Final</th><th>Return</th><th>Max drawdown</th><th>Sharpe</th><th>% invested</th></tr>';
-  for(const k in st){const v=st[k];
-    h+=`<tr><td>${k.replace('_',' ')}</td><td>$${v.final_value.toLocaleString()}</td>
-    <td>${v.total_return_pct}%</td><td style="color:var(--high)">${v.max_drawdown_pct}%</td>
-    <td>${v.sharpe}</td><td>${v.pct_time_invested}%</td></tr>`;}
+  for(const k in stats){const v=stats[k];
+    h+=`<tr><td>${k.replace('_',' ')}</td><td>$${v.final_value.toLocaleString()}</td><td>${v.total_return_pct}%</td><td style="color:var(--high)">${v.max_drawdown_pct}%</td><td>${v.sharpe}</td><td>${v.pct_time_invested}%</td></tr>`;}
   $('#pgStats').innerHTML=h+'</table>';
 }
 
@@ -322,7 +351,7 @@ function initLive(){
   connectLive();
 }
 function connectLive(){
-  try{ LIVE.es=new EventSource('/api/stream'); }catch(e){ return; }
+  try{ LIVE.es=new EventSource((LIVE_BASE||'')+'/api/stream'); }catch(e){ setLiveDot(false,'live feed offline'); return; }
   LIVE.es.onopen=()=>setLiveDot(true,'live ●');
   LIVE.es.onerror=()=>{ setLiveDot(false,'reconnecting…'); };   // EventSource auto-retries
   LIVE.es.onmessage=(e)=>{ let ev; try{ev=JSON.parse(e.data)}catch(_){return;}

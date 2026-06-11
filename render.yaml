@@ -9,9 +9,9 @@ services:
     autoDeploy: true
     healthCheckPath: /api/health
     envVars:
+      - key: SSE_ONLY
+        value: "1"               # static-first: Render serves Live Pulse SSE only
       - key: TURB_MODE
-        value: auto            # fetch real FRED/Yahoo data (falls back to demo if blocked)
-      - key: TURB_REFRESH_MIN
-        value: "20"            # recompute the daily snapshot every 20 min
+        value: synthetic         # dashboard loads from CDN snapshot.json, not Render
       - key: LIVE_NEWS_MODE
-        value: live            # real RSS news producer for the Live Pulse
+        value: live              # real RSS news producer for the Live Pulse

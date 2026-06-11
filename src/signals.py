@@ -50,6 +50,20 @@ def anomaly(f: pd.DataFrame, alpha: float = 0.01) -> pd.DataFrame:
     return out
 
 
+# ---- 3b' fast spike detector (always-available, reactive) --------------------
+def spike_anomaly(f: pd.DataFrame, window: int = 63, z: float = 3.0) -> pd.DataFrame:
+    """Instant, cheap anomaly layer: flag a day whose S&P return or VIX jump is an
+    N-sigma outlier vs its trailing ~3-month window. Reactive (confirms a spike as it
+    happens), needs no training, and is always available the moment data loads."""
+    r = f["ret"]
+    rz = (r - r.rolling(window).mean()) / r.rolling(window).std()
+    vchg = f["vix"].diff()
+    vz = (vchg - vchg.rolling(window).mean()) / vchg.rolling(window).std()
+    flag = (rz.abs() >= z) | (vz >= z)        # big move (either way) OR a VIX jump up
+    return pd.DataFrame({"spike_ret_z": rz.round(2), "spike_vix_z": vz.round(2),
+                         "spike_flag": flag.fillna(False)})
+
+
 # ---- 3c HAR turbulence forecast --------------------------------------------
 def har_turbulence(f: pd.DataFrame) -> pd.Series:
     """Predict next-21d realized vol from daily(1)/weekly(5)/monthly(22) vol + VIX.
@@ -90,9 +104,6 @@ def flare_prob(f: pd.DataFrame, horizon: int = 5, q: float = 0.75) -> pd.DataFra
     y = (fwd >= thr).astype(float).where(fwd.notna() & thr.notna())
     df = f.copy(); df["flare_ev"] = y
     out = pd.Series(np.nan, index=f.index)
-    # Robust: only use features that actually carry data. If e.g. vix_term is missing on
-    # this run, drop it instead of letting dropna() wipe every row (which would NaN the
-    # whole forecast). Requires at least 2 usable features to proceed.
     feats_use = [c for c in FEATS if c in df.columns and df[c].notna().any()]
     if len(feats_use) < 2:
         return pd.DataFrame({"flare_prob": out, "flare_ev": y})
@@ -105,7 +116,7 @@ def flare_prob(f: pd.DataFrame, horizon: int = 5, q: float = 0.75) -> pd.DataFra
         if len(tr) < 300 or tr["flare_ev"].nunique() < 2:
             continue
         sc = StandardScaler().fit(tr[feats_use].values)
-        m = LogisticRegression(max_iter=500).fit(   # no class_weight -> calibrated probs (match base rate)
+        m = LogisticRegression(max_iter=500).fit(   # calibrated (no class_weight -> probs match base rate)
             sc.transform(tr[feats_use].values), tr["flare_ev"].values)
         last_model = (sc, m)
         if len(te):
@@ -126,6 +137,7 @@ def compute_all(f: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     out["regime"] = regime(f)
     out = out.join(anomaly(f, s["anomaly_alpha"]))
     out["har_vol"] = har_turbulence(f)
+    out = out.join(spike_anomaly(f))
     out = out.join(flare_prob(f, s["flare_horizon_days"], s["flare_quantile"]))
     return out
 

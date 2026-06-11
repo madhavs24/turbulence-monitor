@@ -1,0 +1,36 @@
+# Daily precompute: build web/static/snapshot.json on GitHub's runners (FRED/Yahoo are
+# reachable + fast here) and commit it. The website then loads this instantly — no
+# request-path computation, no "engine warming".
+name: refresh-snapshot
+
+on:
+  schedule:
+    - cron: "0 11 * * 1-5"     # ~11:00 UTC on weekdays (after data updates). All times UTC.
+  workflow_dispatch: {}         # allow manual "Run workflow"
+
+permissions:
+  contents: write               # needed to commit the snapshot back to the repo
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Build snapshot (live data)
+        run: python -m tools.build_snapshot auto
+      - name: Commit if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add web/static/snapshot.json
+          if git diff --staged --quiet; then
+            echo "no change"
+          else
+            git commit -m "chore: daily snapshot refresh [skip ci]"
+            git push
+          fi

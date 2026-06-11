@@ -149,7 +149,6 @@ def build_snapshot(mode: str = "auto"):
          "title": r["title"], "url": (r.get("url") or ""), "source": r["source"],
          "score": int(r["score"]), "flagged": bool(r["flagged"])}
         for _, r in news_df.sort_values("score").iterrows()]
-    # news <-> signal context: what we detected today + the prediction it informs
     news_context = {
         "anomaly_active": bool(signals.iloc[-1]["anom_flag"]),
         "band": outlook["turbulence_band"],
@@ -157,6 +156,20 @@ def build_snapshot(mode: str = "auto"):
         "top_driver": (why[0]["feature"] if why else None),
         "agreement": outlook["news_agreement"],
     }
+    # Layered anomaly: spike (instant) + conformal (rigorous) + news (event). Always shows
+    # SOMETHING correct on load, even before the heavy models finish.
+    last = signals.iloc[-1]
+    def _f(x):
+        return None if pd.isna(x) else round(float(x), 2)
+    anomaly_layers = {
+        "spike": {"active": bool(last.get("spike_flag", False)),
+                  "ret_z": _f(last.get("spike_ret_z")), "vix_z": _f(last.get("spike_vix_z"))},
+        "conformal": {"active": bool(last["anom_flag"]),
+                      "p": (None if pd.isna(last["anom_p"]) else round(float(last["anom_p"]), 4))},
+        "news": {"active": bool(news_context["anomaly_active"]) or news.get("narrative") == "stressed"},
+    }
+    anomaly_layers["any_active"] = any(v["active"] for v in
+        (anomaly_layers["spike"], anomaly_layers["conformal"], anomaly_layers["news"]))
     snap = {
         "as_of": outlook["as_of"],
         "outlook": outlook,
@@ -166,6 +179,7 @@ def build_snapshot(mode: str = "auto"):
                  "band": outlook["turbulence_band"], "context": news_context},
         "why": why,
         "anomalies": _anomaly_timeline(feats, signals),
+        "anomaly_layers": anomaly_layers,
         "calibration": _calibration(feats, signals),
         "sim_default": sim_stats,
         "mode": mode,

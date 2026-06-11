@@ -3,7 +3,7 @@
 Usage:
   python -m tests.verify_deploy
   python -m tests.verify_deploy --base-url http://127.0.0.1:8765
-  DEPLOY_URL=https://turbulence-monitor-madhav.onrender.com python -m tests.verify_deploy
+  DEPLOY_URL=https://madhav-turbulence-monitor.onrender.com python -m tests.verify_deploy
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import urllib.request
 
 from web.engine_api import build_snapshot
 
-DEFAULT_URL = "https://turbulence-monitor-madhav.onrender.com"
+DEFAULT_URL = "https://madhav-turbulence-monitor.onrender.com"
 APP_ID = "market-turbulence-monitor"
 PASS: list[str] = []
 FAIL: list[str] = []
@@ -92,7 +92,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--base-url",
         default=os.environ.get("DEPLOY_URL", DEFAULT_URL),
-        help="Base URL of deployed service (default: turbulence-monitor-madhav.onrender.com)",
+        help="Base URL of deployed service (default: madhav-turbulence-monitor.onrender.com)",
     )
     return p.parse_args()
 
@@ -204,7 +204,7 @@ def main() -> int:
     if FAIL:
         print("  FAILED:", FAIL)
         print("\nIf health shows app!=market-turbulence-monitor or /api/snapshot is 404,")
-        print("Render is serving the wrong app. Use Blueprint -> turbulence-monitor-madhav")
+        print("Render is serving the wrong app. Use Blueprint -> madhav-turbulence-monitor")
         print("or confirm repo = madhavs24/turbulence-monitor, branch = main, runtime = Docker")
     print("=" * 70)
     return 0 if not FAIL else 1

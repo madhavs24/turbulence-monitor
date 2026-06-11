@@ -1,6 +1,6 @@
 # Fix Render serving the wrong app (Turbulence v3 instead of Market Turbulence Monitor)
 $ErrorActionPreference = "Stop"
-$Url = "https://turbulence-monitor-madhav.onrender.com"
+$Url = "https://madhav-turbulence-monitor.onrender.com"
 
 Write-Host ""
 Write-Host "=== Render deploy mismatch fix ==="

@@ -21,35 +21,18 @@ from .util import PROC, load_config, log
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
 PANEL = PROC / "panel.parquet"
-
-# records what the LAST get_panel() call actually used ("live" or "synthetic"),
-# so the website can honestly label demo data even under mode="auto".
 LAST_SOURCE = {"value": None}
 
-REQUIRED_LIVE_COLS = frozenset({"SPY", "vix", "hy_oas", "y10", "y2"})
-MIN_PANEL_ROWS = 500
+
+import concurrent.futures as _cf
+
+FETCH_TIMEOUT = 10   # seconds per request (short — fail fast, fetch concurrently)
 
 
-def _panel_usable(panel: pd.DataFrame) -> bool:
-    if panel is None or len(panel) < MIN_PANEL_ROWS:
-        return False
-    return REQUIRED_LIVE_COLS.issubset(panel.columns)
-
-
-def _fred(series_id: str) -> pd.Series:
+def _fred(series_id: str, timeout: int = FETCH_TIMEOUT) -> pd.Series:
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-    last_err = None
-    for attempt in range(2):
-        try:
-            r = requests.get(url, headers=UA, timeout=45)
-            r.raise_for_status()
-            break
-        except Exception as e:
-            last_err = e
-            if attempt == 0:
-                time.sleep(1)
-            else:
-                raise last_err
+    r = requests.get(url, headers=UA, timeout=timeout)
+    r.raise_for_status()
     df = pd.read_csv(io.StringIO(r.text))
     df.columns = ["date", "value"]
     df["date"] = pd.to_datetime(df["date"])
@@ -57,47 +40,55 @@ def _fred(series_id: str) -> pd.Series:
     return df.set_index("date")["value"].dropna()
 
 
-def _yahoo(ticker: str) -> pd.Series:
-    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+def _yahoo(ticker: str, timeout: int = FETCH_TIMEOUT) -> pd.Series:
+    sym = ticker.replace("^", "%5E")
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
            f"?range=max&interval=1d")
-    last_err = None
-    for attempt in range(2):
-        try:
-            r = requests.get(url, headers=UA, timeout=45)
-            r.raise_for_status()
-            break
-        except Exception as e:
-            last_err = e
-            if attempt == 0:
-                time.sleep(1)
-            else:
-                raise last_err
+    r = requests.get(url, headers=UA, timeout=timeout)
+    r.raise_for_status()
     js = r.json()["chart"]["result"][0]
     ts = pd.to_datetime(js["timestamp"], unit="s").normalize()
     close = js["indicators"]["quote"][0]["close"]
     return pd.Series(close, index=ts, name=ticker).dropna()
 
 
-def build_live() -> pd.DataFrame:
+def _fetch_one(kind: str, key: str) -> pd.Series:
+    """One series with a single retry. Short timeout so a dead source can't block the boot."""
+    fn = _fred if kind == "fred" else _yahoo
+    try:
+        return fn(key)
+    except Exception:
+        return fn(key)   # one retry; raises if it fails again
+
+
+def build_live(max_workers: int = 12) -> pd.DataFrame:
+    """Fetch every series CONCURRENTLY with short timeouts. Worst case ~2x the per-request
+    timeout, not (series x timeout x retries). A failed source is logged and skipped, not waited on."""
     cfg = load_config()["data"]
+    jobs = {name: ("fred", sid) for sid, name in cfg["fred"].items()}
+    jobs.update({tk: ("yahoo", tk) for tk in cfg["yahoo"]})
     cols = {}
-    for sid, name in cfg["fred"].items():
+    with _cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(_fetch_one, kind, key): name for name, (kind, key) in jobs.items()}
         try:
-            cols[name] = _fred(sid); log(f"FRED {sid} ok ({len(cols[name])})")
-        except Exception as e:
-            log(f"FRED {sid} FAILED: {e}")
-        time.sleep(0.3)
-    for tk in cfg["yahoo"]:
+            for fut in _cf.as_completed(futs, timeout=FETCH_TIMEOUT * 3):
+                name = futs[fut]
+                try:
+                    cols[name] = fut.result(); log(f"{name} ok ({len(cols[name])})")
+                except Exception as e:
+                    log(f"{name} FAILED: {e}")
+        except _cf.TimeoutError:
+            log("some sources exceeded the global fetch window — proceeding with what arrived")
+    # resilience: if FRED VIX is missing, fall back to Yahoo ^VIX so a FRED outage isn't fatal
+    if "vix" not in cols or cols["vix"].dropna().empty:
         try:
-            cols[tk] = _yahoo(tk); log(f"Yahoo {tk} ok ({len(cols[tk])})")
+            cols["vix"] = _yahoo("^VIX"); log("vix via Yahoo ^VIX fallback")
         except Exception as e:
-            log(f"Yahoo {tk} FAILED: {e}")
-        time.sleep(0.3)
+            log(f"VIX fallback failed: {e}")
     if not cols:
         raise RuntimeError("All data sources failed — check network/firewall.")
     panel = pd.DataFrame(cols).sort_index()
     panel = panel[panel.index >= "2000-01-01"]
-    # forward-fill small gaps (markets/holidays); keep credit spread name stable
     panel = panel.ffill(limit=5)
     return panel
 
@@ -141,24 +132,19 @@ def build_synthetic(n_days: int = 3600, seed: int = 7) -> pd.DataFrame:
 def get_panel(mode: str = "auto") -> pd.DataFrame:
     """mode: 'live' (force fetch), 'synthetic' (force fake), 'auto' (live, fall back to synthetic)."""
     if mode == "synthetic":
-        LAST_SOURCE["value"] = "synthetic"
+        LAST_SOURCE["value"]="synthetic"
         panel = build_synthetic(); panel.to_parquet(PANEL); return panel
     try:
         panel = build_live()
-        if not _panel_usable(panel):
-            raise RuntimeError(
-                f"partial live panel ({panel.shape[0]} rows x {panel.shape[1]} cols); "
-                f"missing {sorted(REQUIRED_LIVE_COLS - set(panel.columns))}"
-            )
-        LAST_SOURCE["value"] = "live"
+        LAST_SOURCE["value"]="live"
         panel.to_parquet(PANEL)
         log(f"panel saved: {panel.shape[0]} rows x {panel.shape[1]} cols -> {PANEL}")
         return panel
     except Exception as e:
         if mode == "live":
             raise
-        log(f"LIVE fetch failed or partial ({e}); using synthetic panel for this run.")
-        LAST_SOURCE["value"] = "synthetic"
+        log(f"LIVE fetch failed ({e}); using synthetic panel for this run.")
+        LAST_SOURCE["value"]="synthetic"
         panel = build_synthetic(); panel.to_parquet(PANEL); return panel
 
 

@@ -49,16 +49,9 @@ def run(features: pd.DataFrame, signals: pd.DataFrame,
     d["ret"] = features["ret"]
     d["vix"] = features["vix"]; d["vix_med"] = features["vix_med"]
     d["regime"] = signals["regime"]; d["flare_prob"] = signals["flare_prob"]
-    if d["vix"].isna().all():
-        d["vix"] = 20.0; d["vix_med"] = 20.0
     d = d.dropna(subset=["ret", "vix"])
     d = d[d.index >= pd.Timestamp(start)]
     stats, curves = {}, {}
-    if len(d) == 0:
-        for s in STRATEGIES:
-            stats[s] = {"final_value": start_cash, "total_return_pct": 0.0, "annual_return_pct": 0.0, "max_drawdown_pct": 0.0, "sharpe": 0.0, "pct_time_invested": 0}
-            curves[s] = pd.Series(start_cash, index=[pd.Timestamp(start)])
-        return stats, pd.DataFrame(curves)
     for s in STRATEGIES:
         pos = _positions(d, s)
         sr = pos * d["ret"]
@@ -78,3 +71,18 @@ if __name__ == "__main__":
     sig = compute_all(f, cfg)
     stats, curves = run(f, sig)
     print(pd.DataFrame(stats).T.to_string())
+
+
+def sim_payload(features, signals, start="2012-01-01", start_cash=10000.0):
+    """Compact data so the browser can run the SAME simulation client-side: market returns +
+    each strategy's causal daily fraction-invested. JS just does cumprod(1+pos*ret)."""
+    d = pd.DataFrame(index=features.index)
+    d["ret"] = features["ret"]; d["vix"] = features["vix"]; d["vix_med"] = features["vix_med"]
+    d["regime"] = signals["regime"]; d["flare_prob"] = signals["flare_prob"]
+    d = d.dropna(subset=["ret", "vix"])
+    d = d[d.index >= pd.Timestamp(start)]
+    positions = {s: [round(float(x), 2) for x in _positions(d, s).values] for s in STRATEGIES}
+    return {"dates": [x.strftime("%Y-%m-%d") for x in d.index],
+            "ret": [round(float(x), 6) for x in d["ret"].values],
+            "positions": positions, "strategies": list(STRATEGIES),
+            "start_cash": start_cash, "sim_start": start}
