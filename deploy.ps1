@@ -6,6 +6,7 @@ $RepoOwner = "singhm"
 $RepoName = "turbulence-monitor"
 $RemoteUrl = "https://github.com/$RepoOwner/$RepoName.git"
 $RepoApi = "https://api.github.com/repos/$RepoOwner/$RepoName"
+$NewRepoUrl = "https://github.com/new?name=$RepoName"
 
 if (-not (Test-Path ".git")) {
     Write-Host "No git repo here. Run from turbulence-agent/ after git init."
@@ -27,12 +28,12 @@ function Test-RepoExists {
 
 if (-not (Test-RepoExists)) {
     Write-Host ""
-    Write-Host "Step 1 — Create the GitHub repo (browser will open)."
+    Write-Host "Step 1 - Create the GitHub repo (browser will open)."
     Write-Host "  Name: $RepoName"
     Write-Host "  Owner: $RepoOwner"
     Write-Host "  Leave it EMPTY (no README, .gitignore, or license)."
     Write-Host ""
-    Start-Process "https://github.com/new?name=$RepoName`&description=Turbulence+Monitor+live+dashboard"
+    Start-Process $NewRepoUrl
     Write-Host "Waiting for repo to appear..."
     $deadline = (Get-Date).AddMinutes(5)
     while ((Get-Date) -lt $deadline) {
@@ -55,7 +56,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "GitHub push complete."
 Write-Host ""
-Write-Host "Step 2 — Deploy on Render (browser will open)."
+Write-Host "Step 2 - Deploy on Render (browser will open)."
 Write-Host "  1. Sign in with GitHub"
 Write-Host "  2. New + -> Blueprint"
 Write-Host "  3. Select repo: $RepoName"
