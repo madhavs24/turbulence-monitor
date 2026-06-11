@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Market Turbulence Monitor</title>
+<meta name="description" content="An honest, free, demo-money market turbulence monitor. Detects stress and turbulence — not price direction.">
+<link rel="stylesheet" href="/static/styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <div class="brand"><span class="dot" id="brandDot" style="color:var(--unknown)">●</span>
+    Turbulence&nbsp;Monitor <small id="modeTag"></small></div>
+  <nav class="nav">
+    <a href="#today">Today</a><a href="#vitals">Vitals</a><a href="#news">News</a>
+    <a href="#why">Why</a><a href="#anom">Anomalies</a><a href="#play">Playground</a><a href="#record">Track record</a>
+  </nav>
+  <span class="updated" id="updated"></span>
+</div></header>
+
+<section id="livepulse" class="wrap" style="padding-top:22px">
+  <p class="h">Live Pulse · real-time news shock monitor</p>
+  <div class="card" id="liveCard">
+    <div class="livehead">
+      <span class="livedot" id="liveDot">●</span>
+      <b>Heartbeat</b>
+      <span class="shockread">shock <b id="shockNow" style="color:var(--high)">0.00</b> · news sentiment <b id="sentNow">0.00</b></span>
+      <span class="faint" id="liveStatus" style="margin-left:auto;font-size:12px">connecting…</span>
+    </div>
+    <div class="chart-wrap chart-wrap--live"><canvas id="liveChart"></canvas></div>
+    <div class="ticker" id="ticker"></div>
+    <div class="faint" style="margin-top:8px">Detects a BURST of stressed coverage across outlets (any topic) and pulses the gauge. Tentative = instant low-confidence; Confirmed = breadth-verified shock. Narrative stress, not a price call.</div>
+  </div>
+</section>
+
+<main class="wrap" id="app">
+  <div class="skel" id="boot">Loading the engine… the first build fetches free market data, give it a few seconds.</div>
+</main>
+
+<footer class="wrap">
+  Built on free data (FRED · Yahoo · public RSS). Forecasts turbulence/stress, which is predictable; it refuses to predict direction, which isn't.
+  Signal strategies reduce drawdown, they don't beat buy-and-hold. Past performance ≠ future results. Not investment advice.
+</footer>
+
+<script>
+const BAND={Calm:'var(--calm)',Watch:'var(--watch)',Elevated:'var(--elevated)',High:'var(--high)',Unknown:'var(--unknown)'};
+const $=(s,el=document)=>el.querySelector(s);
+const el=(t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e;};
+let SNAP=null, charts={};
+
+async function boot(){
+  try{
+    const r=await fetch('/api/snapshot'); const d=await r.json();
+    if(!d.ready){ $('#boot').textContent='Engine warming up… '+(d.error||'')+' — retrying'; return setTimeout(boot,4000);}
+    SNAP=d; render(d);
+  }catch(e){ $('#boot').textContent='Could not reach the engine. Is the server running?'; }
+}
+
+function destroyCharts(){
+  (charts.sparks||[]).forEach(c=>{try{c.destroy()}catch(e){}});
+  charts.sparks=[];
+  ['cal','pg'].forEach(k=>{ if(charts[k]){try{charts[k].destroy()}catch(e){}; charts[k]=null;} });
+}
+function render(d){
+  document.title=`${d.outlook.turbulence_band} · Turbulence Monitor`;
+  const demo = (d.data_source==='synthetic');
+  $('#modeTag').textContent = demo ? '(demo data)' : '(live)';
+  $('#modeTag').style.color = demo ? 'var(--watch)' : 'var(--calm)';
+  $('#updated').textContent = 'updated '+ new Date(d.updated).toLocaleString();
+  $('#brandDot').style.color = BAND[d.outlook.turbulence_band]||'var(--unknown)';
+  destroyCharts();
+  const app=$('#app'); app.innerHTML='';
+  app.append(heroSection(d), vitalsSection(d), newsSection(d), whySection(d),
+             anomSection(d), playSection(d), recordSection(d));
+  drawVitals(d); drawCalibration(d); runPlay();   // initial playground
+}
+
+/* 1 — HERO */
+function heroSection(d){
+  const o=d.outlook, c=BAND[o.turbulence_band];
+  const s=el('section','',''); s.id='today';
+  const hero=el('div','hero');
+  hero.style.background=`linear-gradient(135deg,${c} -40%,rgba(21,29,53,.6) 55%),var(--card)`;
+  hero.style.borderColor=c;
+  hero.append(el('div','band-name',`${o.turbulence_band} · turbulence outlook`));
+  hero.append(el('h1', null, o.title || o.headline));
+  hero.append(el('div','headline muted', o.subtitle || 'Best-guess read for the next ~5 trading days.'));
+  const g=el('div','gaugewrap');
+  g.append(el('div','', `<div class="bigpct">${o.flare_prob_pct??'–'}%</div>
+     <div class="faint">best-guess chance next week is unusually choppy</div>`));
+  const chips=el('div','chips');
+  const add=(k,v)=>chips.append(el('span','chip',`${k} <b>${v}</b>`));
+  add('Expected vol', (o.expected_vol_annual_pct??'–')+'%');
+  add('Regime', o.regime);
+  add('VIX', o.vix + (o.vix_vs_1y_median!=null?` (${o.vix_vs_1y_median>=0?'+':''}${o.vix_vs_1y_median} vs 1y med)`:''));
+  add('Anomaly', o.anomaly.flagged?'TRIGGERED':'quiet');
+  add('Confidence', Math.round(o.confidence*100)+'%');
+  g.append(chips); hero.append(g);
+  s.append(hero); return s;
+}
+
+/* 2 — VITALS */
+function vitalsSection(d){
+  const s=el('section'); s.id='vitals';
+  s.append(el('p','h','Market vitals'));
+  const grid=el('div','grid vitals');
+  d.vitals.forEach(v=>{
+    const card=el('div','card vital');
+    const up = (v.pct!=null? v.pct: v.change)>=0;
+    const chg = v.pct!=null ? `${up?'▲':'▼'} ${Math.abs(v.pct)}%` : `${up?'▲':'▼'} ${Math.abs(v.change)}`;
+    card.append(el('div','lab',v.label));
+    card.append(el('div','val',v.last));
+    card.append(el('div','chg '+(up?'up':'down'),chg));
+    const wrap=el('div','spark-wrap'); const cv=el('canvas'); cv.id='spk_'+v.key; wrap.append(cv); card.append(wrap);
+    grid.append(card);
+  });
+  s.append(grid); return s;
+}
+function drawVitals(d){
+  charts.sparks=[];
+  d.vitals.forEach(v=>{
+    const ctx=$('#spk_'+v.key); if(!ctx)return;
+    const up=(v.pct!=null?v.pct:v.change)>=0;
+    const c=new Chart(ctx,{type:'line',data:{labels:v.spark.map(p=>p.d),
+      datasets:[{data:v.spark.map(p=>p.v),borderColor:up?'#22c58b':'#ef4d5a',
+      borderWidth:1.8,pointRadius:0,fill:true,
+      backgroundColor:(up?'rgba(34,197,139,.12)':'rgba(239,77,90,.12)'),tension:.25}]},
+      options:{plugins:{legend:{display:false},tooltip:{enabled:true,callbacks:{title:i=>i[0].label,label:i=>v.label+': '+i.raw}}},
+      scales:{x:{display:false},y:{display:false}},elements:{line:{borderJoinStyle:'round'}},
+      maintainAspectRatio:false,animation:false}});
+    charts.sparks.push(c);
+  });
+}
+
+/* 3 — NEWS */
+function newsSection(d){
+  const s=el('section'); s.id='news';
+  s.append(el('p','h','Live news · what we detected & predicted'));
+  const n=d.news, sum=n.summary, ctx=n.context||{};
+  // detection -> prediction tie block (the feature you asked for)
+  const detect = ctx.anomaly_active ? 'an <b>anomaly</b> in today’s conditions'
+               : (d.outlook.turbulence_band==='Elevated'||d.outlook.turbulence_band==='High')
+                 ? 'elevated turbulence signals' : 'no unusual stress';
+  const tieClass = (ctx.anomaly_active || d.outlook.news_agreement==='diverges') ? 'banner warn' : 'banner ok';
+  s.append(el('div',tieClass,
+    `<b>What the engine sees:</b> ${detect}; top driver ${ctx.top_driver||'–'}. `+
+    `<b>Best-guess call:</b> ${d.outlook.turbulence_band} · ${d.outlook.flare_prob_pct??'–'}% chance of a choppy week. `+
+    `News narrative is <b>${sum.narrative}</b> and ${
+      d.outlook.news_agreement==='diverges'?'<b>disagrees</b> with the signals (lower confidence).':
+      d.outlook.news_agreement==='confirms'?'<b>confirms</b> the signals.':'is neutral.'}`));
+  const card=el('div','card');
+  card.append(el('div','muted',`${sum.n} headlines scanned · ${Math.round(sum.stress_share*100)}% negative${sum.injection_flags?` · <span style="color:var(--watch)">${sum.injection_flags} quarantined</span>`:''}`));
+  (n.items||[]).slice(0,12).forEach(it=>{
+    const row=el('div','newsitem');
+    const col = it.score<0?'var(--high)':it.score>0?'var(--calm)':'var(--faint)';
+    const sc=el('div','score',(it.score>0?'+':'')+it.score); sc.style.color=col; sc.style.background='rgba(255,255,255,.05)';
+    row.append(sc);
+    const body=el('div','');
+    const titleHtml = it.url ? `<a href="${it.url}" target="_blank" rel="noopener noreferrer">${it.title}</a>` : it.title;
+    body.append(el('div','',titleHtml));
+    const when = it.time ? ' · '+it.time : '';
+    const meta=el('div','faint',`${it.source}${when}`); meta.style.fontSize='12px'; meta.style.marginTop='3px';
+    if(it.flagged){const t=el('span','tag','⚠ quarantined (treated as data, not obeyed)');t.style.marginLeft='8px';meta.append(t);}
+    body.append(meta); row.append(body); card.append(row);
+  });
+  card.append(el('div','faint','Every headline is treated as data, never an instruction — this blocks prompt-injection from a malicious article. Score colors each item (red = stress). Click a headline to read the source.'));
+  s.append(card); return s;
+}
+
+/* 4 — WHY */
+function whySection(d){
+  const s=el('section'); s.id='why';
+  s.append(el('p','h','Why this call · what\'s unusual today'));
+  const card=el('div','card');
+  if(!d.why.length){card.append(el('div','muted','Not enough history yet to attribute drivers.'));s.append(card);return s;}
+  const bars=el('div','bars'); const maxz=Math.max(2,...d.why.map(w=>Math.abs(w.z)));
+  d.why.forEach(w=>{
+    const b=el('div','bar');
+    b.append(el('div','',w.feature));
+    const track=el('div','track'); const f=el('div','fill');
+    const pct=Math.min(100,Math.abs(w.z)/maxz*100);
+    f.style.width=pct+'%'; f.style.background=w.dir==='high'?'var(--high)':'var(--accent)';
+    f.style.left=w.dir==='high'?'50%':(50-pct/2)+'%';
+    if(w.dir==='low'){f.style.left='auto';f.style.right='50%';}
+    track.append(f); b.append(track);
+    b.append(el('div','',`${w.z>0?'+':''}${w.z}σ`));
+    bars.append(b);
+  });
+  card.append(bars);
+  const note=el('div','faint','Each bar shows how far today sits from its 1-year normal (σ). Right = unusually high · left = unusually low.');
+  note.style.marginTop='12px'; card.append(note);
+  s.append(card); return s;
+}
+
+/* 5 — ANOMALIES */
+function anomSection(d){
+  const s=el('section'); s.id='anom';
+  s.append(el('p','h','Anomaly timeline · click a bar'));
+  const card=el('div','card');
+  const tl=el('div','timeline'); const items=d.anomalies;
+  if(!items.length) card.append(el('div','muted','No anomalies flagged in the visible window.'));
+  const maxv=Math.max(...items.map(a=>a.next21d_vol_pct||10),20);
+  items.forEach((a,i)=>{
+    const bar=el('div','tl'); bar.style.height=Math.max(10,(a.next21d_vol_pct||12)/maxv*40)+'px';
+    bar.title=a.date; bar.onclick=()=>showAno(a);
+    tl.append(bar);
+  });
+  card.append(tl);
+  const det=el('div','anodetail'); det.id='anodet';
+  card.append(det); s.append(card);
+  setTimeout(()=>{if(items.length)showAno(items[items.length-1]);},0);
+  return s;
+}
+function showAno(a){
+  const det=$('#anodet'); if(!det)return;
+  const drivers=a.drivers.map(x=>`${x.f} (${x.z>0?'+':''}${x.z}σ)`).join(' · ');
+  det.innerHTML=`<div class="card" style="background:var(--bg2)">
+    <b>${a.date}</b> — regime ${a.regime}, VIX ${a.vix??'–'}, conformal p=${a.p}
+    <div class="muted" style="margin-top:6px">Drivers: ${drivers||'–'}</div>
+    <div style="margin-top:6px">What followed: realized volatility over the next 21 trading days was
+      <b>${a.next21d_vol_pct!=null?a.next21d_vol_pct+'%':'(still pending)'}</b> annualized.</div></div>`;
+}
+
+/* 6 — PLAYGROUND */
+function playSection(d){
+  const s=el('section'); s.id='play';
+  s.append(el('p','h','Paper-trading playground · demo money'));
+  const card=el('div','card');
+  const ctr=el('div','controls');
+  ctr.innerHTML=`<div><label>Demo bankroll ($)</label><input id="pgCash" type="number" value="10000" min="100" step="100"></div>
+    <div><label>Start date</label><input id="pgStart" type="date" value="2012-01-01"></div>`;
+  const stratWrap=el('div'); stratWrap.innerHTML='<label style="font-size:12px;color:var(--muted)">Strategies</label>';
+  const strats=el('div','strats');
+  ['buy_hold','vix_rule','regime','turbulence','coinflip'].forEach(name=>{
+    const b=el('div','stratbtn'+(name!=='coinflip'?' on':''),name.replace('_',' '));
+    b.dataset.s=name; b.onclick=()=>{b.classList.toggle('on');};
+    strats.append(b);
+  });
+  stratWrap.append(strats); ctr.append(stratWrap);
+  const run=el('button','btn','Run'); run.onclick=runPlay; ctr.append(run);
+  card.append(ctr);
+  const cw=el('div','chart-wrap chart-wrap--play'); const cv=el('canvas'); cv.id='pgChart'; cw.append(cv); card.append(cw);
+  const tbl=el('div',''); tbl.id='pgStats'; tbl.style.marginTop='12px'; card.append(tbl);
+  card.append(el('div','faint','The honest punchline: signal strategies usually cut the worst drawdown, but don\'t beat simply buying and holding. This is a risk tool, not a money machine.'));
+  s.append(card); return s;
+}
+async function runPlay(){
+  const statsEl=$('#pgStats');
+  const cash=$('#pgCash')?.value||10000, start=$('#pgStart')?.value||'2012-01-01';
+  const on=[...document.querySelectorAll('.stratbtn.on')].map(b=>b.dataset.s);
+  const strat=on.length?on.join(','):'buy_hold,turbulence';
+  let d;
+  try{
+    const r=await fetch(`/api/papertrade?strategies=${strat}&start=${start}&cash=${cash}`);
+    if(!r.ok) throw new Error('server '+r.status);
+    d=await r.json();
+    if(d.error) throw new Error(d.error);
+  }catch(e){ if(statsEl) statsEl.innerHTML=`<div class="banner warn">Couldn't run the simulation: ${e.message}. Try again in a moment.</div>`; return; }
+  const colors={buy_hold:'#6aa8ff',vix_rule:'#22c58b',regime:'#f5b942',turbulence:'#ef4d5a',coinflip:'#9aa6c4'};
+  if(charts.pg)charts.pg.destroy();
+  charts.pg=new Chart($('#pgChart'),{type:'line',data:{labels:d.dates,
+    datasets:Object.entries(d.curves).map(([k,v])=>({label:k.replace('_',' '),data:v,
+      borderColor:colors[k],borderWidth:2,pointRadius:0,tension:.1}))},
+    options:{plugins:{legend:{labels:{color:'#cdd7f0'}}},
+      scales:{x:{ticks:{color:'#64718f',maxTicksLimit:6},grid:{color:'#1b2440'}},
+        y:{ticks:{color:'#64718f',callback:v=>'$'+(v/1000)+'k'},grid:{color:'#1b2440'}}},
+      maintainAspectRatio:false,animation:false}});
+  const st=d.stats;
+  let h='<table><tr><th>Strategy</th><th>Final</th><th>Return</th><th>Max drawdown</th><th>Sharpe</th><th>% invested</th></tr>';
+  for(const k in st){const v=st[k];
+    h+=`<tr><td>${k.replace('_',' ')}</td><td>$${v.final_value.toLocaleString()}</td>
+    <td>${v.total_return_pct}%</td><td style="color:var(--high)">${v.max_drawdown_pct}%</td>
+    <td>${v.sharpe}</td><td>${v.pct_time_invested}%</td></tr>`;}
+  $('#pgStats').innerHTML=h+'</table>';
+}
+
+/* 7 — TRACK RECORD */
+function recordSection(d){
+  const s=el('section'); s.id='record';
+  s.append(el('p','h','Track record · our report card'));
+  const c=d.calibration;
+  const card=el('div','card');
+  if(!c.n){card.append(el('div','muted','Not enough data to score yet.'));s.append(card);return s;}
+  card.append(el('div','',`<div class="chips">
+    <span class="chip">Our flare model AUC <b>${c.auc??'–'}</b></span>
+    <span class="chip">VIX-only rule AUC <b>${c.vix_auc??'–'}</b></span>
+    <span class="chip">Brier score <b>${c.brier??'–'}</b> <span class="faint">(lower=better)</span></span>
+    <span class="chip">Scored on <b>${c.n.toLocaleString()}</b> days</span></div>`));
+  const cw=el('div','chart-wrap chart-wrap--cal'); const cv=el('canvas'); cv.id='calChart'; cw.append(cv); card.append(cw);
+  card.append(el('div','faint','Calibration: bars are how often it was actually choppy; the line is what we predicted. The closer they track, the more you can trust the percentages.'));
+  s.append(card); return s;
+}
+function drawCalibration(d){
+  const c=d.calibration; if(!c.bins||!c.bins.length)return;
+  charts.cal=new Chart($('#calChart'),{data:{labels:c.bins.map(b=>b.bucket),
+    datasets:[{type:'bar',label:'Actual % choppy',data:c.bins.map(b=>b.actual),
+      backgroundColor:'rgba(106,168,255,.55)',borderRadius:6},
+      {type:'line',label:'We predicted',data:c.bins.map(b=>b.predicted),
+      borderColor:'#f5b942',borderWidth:2,pointRadius:3,tension:.2}]},
+    options:{plugins:{legend:{labels:{color:'#cdd7f0'}}},
+      scales:{x:{ticks:{color:'#64718f'},grid:{display:false}},
+        y:{ticks:{color:'#64718f',callback:v=>v+'%'},grid:{color:'#1b2440'}}},
+      maintainAspectRatio:false,animation:false}});
+}
+
+/* ---- LIVE PULSE (SSE, persistent; independent of the daily snapshot) ---- */
+const LIVE={chart:null, labels:[], shock:[], sent:[], max:80, es:null};
+function setLiveDot(on,txt){ const d=$('#liveDot'),st=$('#liveStatus');
+  if(d){d.classList.toggle('on',on);} if(st){st.textContent=txt||(on?'live ●':'reconnecting…');} }
+function initLive(){
+  const ctx=$('#liveChart'); if(!ctx||LIVE.chart) return;
+  LIVE.chart=new Chart(ctx,{type:'line',data:{labels:LIVE.labels,datasets:[
+    {label:'Shock',data:LIVE.shock,borderColor:'#ef4d5a',backgroundColor:'rgba(239,77,90,.16)',
+     fill:true,pointRadius:0,tension:.35,yAxisID:'y'},
+    {label:'News sentiment',data:LIVE.sent,borderColor:'#6aa8ff',pointRadius:0,tension:.35,yAxisID:'y2'}]},
+    options:{plugins:{legend:{labels:{color:'#cdd7f0',boxWidth:12}}},
+      scales:{x:{display:false},
+        y:{min:0,max:1,position:'left',ticks:{color:'#64718f'},grid:{color:'#1b2440'}},
+        y2:{min:-1,max:1,position:'right',ticks:{color:'#445'},grid:{display:false}}},
+      maintainAspectRatio:false,animation:false}});
+  connectLive();
+}
+function connectLive(){
+  try{ LIVE.es=new EventSource('/api/stream'); }catch(e){ return; }
+  LIVE.es.onopen=()=>setLiveDot(true,'live ●');
+  LIVE.es.onerror=()=>{ setLiveDot(false,'reconnecting…'); };   // EventSource auto-retries
+  LIVE.es.onmessage=(e)=>{ let ev; try{ev=JSON.parse(e.data)}catch(_){return;}
+    if(ev.type==='pulse') onPulse(ev); else if(ev.type==='news') onNews(ev); };
+}
+function onPulse(ev){
+  const t=new Date(ev.ts).toLocaleTimeString();
+  LIVE.labels.push(t); LIVE.shock.push(ev.shock); LIVE.sent.push(ev.sentiment);
+  while(LIVE.labels.length>LIVE.max){LIVE.labels.shift();LIVE.shock.shift();LIVE.sent.shift();}
+  const sn=$('#shockNow'), se=$('#sentNow');
+  if(sn){sn.textContent=ev.shock.toFixed(2); sn.style.color=ev.shock>=0.6?'var(--high)':ev.shock>=0.3?'var(--watch)':'var(--calm)';}
+  if(se){se.textContent=(ev.sentiment>=0?'+':'')+ev.sentiment.toFixed(2);}
+  if(LIVE.chart) LIVE.chart.update('none');
+}
+function onNews(ev){
+  const tick=$('#ticker'); if(!tick) return;
+  const row=el('div','tkitem newpop');
+  const badge=el('span','tier '+ev.tier, ev.tier);
+  const body=el('div','');
+  const titleHtml = ev.url && ev.url!=='https://example.com/replay'
+      ? `<a href="${ev.url}" target="_blank" rel="noopener">${ev.headline}</a>` : ev.headline;
+  body.append(el('div','',titleHtml));
+  const bits=[];
+  if(ev.lead_sector) bits.push(ev.lead_sector);
+  if(ev.tickers&&ev.tickers.length) bits.push(ev.tickers.join(', '));
+  if(ev.themes&&ev.themes.length) bits.push(ev.themes.join(', '));
+  const tags = bits.length?' · '+bits.join(' · '):'';
+  body.append(el('div','meta',`${ev.source} · shock ${ev.shock} · ${ev.breadth} outlet(s)${tags}`));
+  row.append(badge, body);
+  tick.prepend(row);
+  while(tick.children.length>25) tick.removeChild(tick.lastChild);
+  if(ev.tier!=='low'){ const c=$('#liveCard'); if(c){c.classList.remove('pulse-flash'); void c.offsetWidth; c.classList.add('pulse-flash');} }
+}
+
+boot();
+initLive();
+// Auto-refresh: only re-render when the engine actually produced a NEW snapshot
+// (server recomputes ~every 20 min), so the playground isn't reset on every poll.
+setInterval(()=>{ if(!SNAP) return;
+  fetch('/api/snapshot').then(r=>r.json()).then(d=>{
+    if(d.ready && d.updated!==SNAP.updated){ SNAP=d; render(d); }
+  }).catch(()=>{}); }, 120000);
+</script>
+</body></html>

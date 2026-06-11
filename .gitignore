@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+ENV/
+
+# runtime artifacts (regenerated on the server)
+data/processed/*.parquet
+results/
+knowledge/history.csv
+knowledge/failure_log.md
+*.log
+
+# editor / OS
+.cursor/
+.DS_Store
+.vscode/

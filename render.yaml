@@ -1,0 +1,15 @@
+# One-click deploy to Render (free tier). Push this repo to GitHub, then
+# Render dashboard -> New -> Blueprint -> pick the repo. See DEPLOY_RENDER.md.
+services:
+  - type: web
+    name: turbulence-monitor
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: TURB_MODE
+        value: auto            # fetch real FRED/Yahoo data (falls back to demo if blocked)
+      - key: TURB_REFRESH_MIN
+        value: "20"            # recompute the daily snapshot every 20 min
+      - key: LIVE_NEWS_MODE
+        value: live            # real RSS news producer for the Live Pulse

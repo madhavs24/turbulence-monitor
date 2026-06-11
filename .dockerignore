@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.git/
+.venv/
+venv/
+env/
+ENV/
+*.log
+.cursor/
+.DS_Store
+data/processed/*.parquet
+results/*
+knowledge/history.csv
+knowledge/failure_log.md

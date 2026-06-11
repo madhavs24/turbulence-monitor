@@ -1,0 +1,51 @@
+# Turbulence Monitor — autonomous config. Everything free, demo-money only.
+project:
+  name: "Market Turbulence Monitor"
+  start_cash: 10000          # demo dollars for the paper-trade sim
+  sim_start: "2012-01-01"
+
+data:
+  # FRED series (no API key needed — public CSV endpoint)
+  fred:
+    VIXCLS:   vix          # CBOE Volatility Index (the fear gauge)
+    VXVCLS:   VIX3M        # CBOE 3-Month Volatility Index -> gives the term-structure slope
+    DGS10:    y10          # 10y Treasury yield
+    DGS2:     y2           # 2y Treasury yield
+    BAMLH0A0HYM2: hy_oas   # ICE BofA US High Yield OAS (credit stress)
+    STLFSI4:  stlfsi       # St. Louis Fed Financial Stress Index
+    DTWEXBGS: dollar       # Broad dollar index
+    DCOILWTICO: oil        # WTI crude
+  # Yahoo chart API tickers (direct, browser UA — NOT yfinance)
+  yahoo: [SPY, QQQ, TLT, HYG, LQD, GLD, USO]
+
+signals:
+  anomaly_alpha: 0.01        # target false-alarm rate for the conformal alarm
+  flare_horizon_days: 5      # "next week could be choppy" window
+  flare_quantile: 0.75       # what counts as a turbulence flare-up
+
+news:
+  enabled: true
+  max_items: 40
+  lookback_hours: 36
+  feeds:
+    - "https://news.google.com/rss/search?q=stock%20market%20volatility%20OR%20selloff%20OR%20VIX&hl=en-US&gl=US&ceid=US:en"
+    - "https://news.google.com/rss/search?q=federal%20reserve%20OR%20inflation%20OR%20recession&hl=en-US&gl=US&ceid=US:en"
+    - "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
+    - "https://www.cnbc.com/id/100003114/device/rss/rss.html"
+
+risk:
+  # Honest framing: these are RISK signals, not a money machine. No real trades, ever.
+  disclaimer: "Educational only. Detects turbulence/stress, NOT price direction. Demo money only."
+
+live_news:
+  poll_secs: 3            # how often to poll RSS feeds (low-latency tier)
+  pulse_secs: 1.5         # heartbeat cadence pushed to the dashboard
+  window_min: 30          # rolling window for de-dup
+  tentative_shock: 0.45   # instant, lower-confidence pulse
+  confirm_shock: 0.60     # confirmed shock threshold
+  confirm_breadth: 3      # distinct outlets needed to confirm a burst
+  feeds:
+    - "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
+    - "https://www.cnbc.com/id/100003114/device/rss/rss.html"
+    - "https://news.google.com/rss/search?q=stock%20market%20OR%20bank%20OR%20fed%20OR%20selloff&hl=en-US&gl=US&ceid=US:en"
+    - "https://news.google.com/rss/search?q=breaking%20markets%20OR%20crisis%20OR%20geopolitics&hl=en-US&gl=US&ceid=US:en"
