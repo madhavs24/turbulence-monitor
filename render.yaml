@@ -5,6 +5,7 @@ services:
     name: turbulence-monitor
     runtime: docker
     plan: free
+    autoDeploy: true
     healthCheckPath: /api/health
     envVars:
       - key: TURB_MODE

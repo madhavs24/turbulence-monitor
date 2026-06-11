@@ -57,10 +57,29 @@ def papertrade(strategies: str = Query(",".join(STRATEGIES)),
     return {"stats": {s: stats[s] for s in want}, "dates": dates, "curves": series}
 
 
+APP_ID = "market-turbulence-monitor"
+APP_VERSION = "1.0.0"
+
+
 @app.get("/api/health")
 def health():
     snap, updated, err = STORE.get()
-    return {"ok": snap is not None, "updated": updated, "error": err}
+    data_source = snap.get("data_source") if snap else None
+    return {
+        "app": APP_ID,
+        "version": APP_VERSION,
+        "ok": snap is not None,
+        "updated": updated,
+        "error": err,
+        "data_source": data_source,
+        "turb_mode": os.environ.get("TURB_MODE", "auto"),
+        "live_news_mode": LIVE_MODE,
+    }
+
+
+@app.get("/api/version")
+def version():
+    return {"app": APP_ID, "version": APP_VERSION, "title": "Market Turbulence Monitor"}
 
 
 @app.get("/api/live/recent")
