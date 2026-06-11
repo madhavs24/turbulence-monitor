@@ -29,8 +29,18 @@ LAST_SOURCE = {"value": None}
 
 def _fred(series_id: str) -> pd.Series:
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-    r = requests.get(url, headers=UA, timeout=20)
-    r.raise_for_status()
+    last_err = None
+    for attempt in range(2):
+        try:
+            r = requests.get(url, headers=UA, timeout=45)
+            r.raise_for_status()
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1)
+            else:
+                raise last_err
     df = pd.read_csv(io.StringIO(r.text))
     df.columns = ["date", "value"]
     df["date"] = pd.to_datetime(df["date"])
@@ -41,8 +51,18 @@ def _fred(series_id: str) -> pd.Series:
 def _yahoo(ticker: str) -> pd.Series:
     url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
            f"?range=max&interval=1d")
-    r = requests.get(url, headers=UA, timeout=20)
-    r.raise_for_status()
+    last_err = None
+    for attempt in range(2):
+        try:
+            r = requests.get(url, headers=UA, timeout=45)
+            r.raise_for_status()
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1)
+            else:
+                raise last_err
     js = r.json()["chart"]["result"][0]
     ts = pd.to_datetime(js["timestamp"], unit="s").normalize()
     close = js["indicators"]["quote"][0]["close"]

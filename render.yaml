@@ -4,6 +4,7 @@ services:
   - type: web
     name: turbulence-monitor
     runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: free
     autoDeploy: true
     healthCheckPath: /api/health
