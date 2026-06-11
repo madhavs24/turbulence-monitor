@@ -32,7 +32,7 @@ if (-not (Test-RepoExists)) {
     Write-Host "  Owner: $RepoOwner"
     Write-Host "  Leave it EMPTY (no README, .gitignore, or license)."
     Write-Host ""
-    Start-Process "https://github.com/new?name=$RepoName&description=Turbulence+Monitor+live+dashboard"
+    Start-Process "https://github.com/new?name=$RepoName`&description=Turbulence+Monitor+live+dashboard"
     Write-Host "Waiting for repo to appear..."
     $deadline = (Get-Date).AddMinutes(5)
     while ((Get-Date) -lt $deadline) {
