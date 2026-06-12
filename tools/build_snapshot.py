@@ -1,15 +1,16 @@
 """Build the STATIC daily artifact: web/static/snapshot.json.
 
-This is the heart of the static-first architecture. Run it on a schedule (GitHub Action)
-where FRED/Yahoo are reachable; it does all the heavy work ONCE and writes a JSON the website
-loads instantly. The web server / CDN never computes on the request path.
+Runs on a schedule (GitHub Action) where Yahoo/FRED are reachable. Yahoo-primary fetch makes
+this resilient to FRED outages. It RETRIES the live build and REFUSES to write a degraded
+snapshot (no flare / empty calibration / synthetic fallback), so the site never publishes
+"not enough data" — a bad run simply fails and the next run retries.
 
 Usage:
-    python -m tools.build_snapshot            # live data (use in CI)
-    python -m tools.build_snapshot synthetic  # offline demo artifact
+    python -m tools.build_snapshot auto        # live data (CI) — exits non-zero if degraded
+    python -m tools.build_snapshot synthetic   # offline demo artifact
 """
 from __future__ import annotations
-import sys, json, datetime as dt
+import sys, json, time, datetime as dt
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,27 +22,39 @@ from src.util import log
 OUT = ROOT / "web" / "static" / "snapshot.json"
 
 
+def _quality_ok(snap, mode):
+    if mode == "synthetic":
+        return True
+    return (snap.get("data_source") == "live"
+            and snap["outlook"].get("flare_prob_pct") is not None
+            and snap["calibration"].get("n", 0) > 0)
+
+
 def main(mode: str = "auto"):
-    snap, feats, signals = build_snapshot(mode)
-    if mode != "synthetic":
-        c = snap.get("calibration", {})
-        flare = snap.get("outlook", {}).get("flare_prob_pct")
-        if c.get("n", 0) == 0 or flare is None:
-            log(f"REFUSED degraded snapshot: data_source={snap.get('data_source')} "
-                f"flare={flare} calibration_n={c.get('n')}")
+    tries = 1 if mode == "synthetic" else 4
+    snap = feats = signals = None
+    for i in range(tries):
+        snap, feats, signals = build_snapshot(mode)
+        if _quality_ok(snap, mode):
+            break
+        log(f"attempt {i+1}/{tries} degraded (source={snap.get('data_source')}, "
+            f"flare={snap['outlook'].get('flare_prob_pct')}, cal_n={snap['calibration'].get('n')}) "
+            f"— retrying")
+        time.sleep(5)
+    else:
+        if mode != "synthetic":
+            log("REFUSING to write a degraded live snapshot — failing so the next run retries.")
             sys.exit(1)
-    snap["sim"] = sim_payload(feats, signals,
-                              start=snap.get("sim_default") and "2012-01-01" or "2012-01-01")
+
+    snap["sim"] = sim_payload(feats, signals, start="2012-01-01")
     snap["generated_at"] = dt.datetime.utcnow().isoformat() + "Z"
-    snap["as_of"] = snap.get("as_of")
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(snap, separators=(",", ":")))
     kb = OUT.stat().st_size / 1024
-    c = snap.get("calibration", {})
-    log(f"snapshot.json written: {kb:.0f} KB | as_of {snap['as_of']} | "
-        f"source {snap.get('data_source')} | flare {snap['outlook']['flare_prob_pct']}% | "
-        f"anomaly_layers any={snap['anomaly_layers']['any_active']}")
-    log(f"calibration: flare_auc={c.get('auc')} vix_auc={c.get('vix_auc')} brier={c.get('brier')} n={c.get('n')}")
+    cal = snap["calibration"]
+    log(f"snapshot.json OK: {kb:.0f} KB | as_of {snap['as_of']} | source {snap.get('data_source')} "
+        f"| flare {snap['outlook']['flare_prob_pct']}% | AUC {cal.get('auc')} vs VIX {cal.get('vix_auc')} "
+        f"| Brier {cal.get('brier')}")
     return snap
 
 

@@ -12,7 +12,7 @@ Design notes:
     is runnable and testable without network access.
 """
 from __future__ import annotations
-import io, os, time
+import io, time
 import numpy as np
 import pandas as pd
 import requests
@@ -26,7 +26,7 @@ LAST_SOURCE = {"value": None}
 
 import concurrent.futures as _cf
 
-FETCH_TIMEOUT = int(os.environ.get("DATA_FETCH_TIMEOUT", "10"))
+FETCH_TIMEOUT = 10   # seconds per request (short — fail fast, fetch concurrently)
 
 
 def _fred(series_id: str, timeout: int = FETCH_TIMEOUT) -> pd.Series:
@@ -52,44 +52,55 @@ def _yahoo(ticker: str, timeout: int = FETCH_TIMEOUT) -> pd.Series:
     return pd.Series(close, index=ts, name=ticker).dropna()
 
 
-def _fetch_one(kind: str, key: str) -> pd.Series:
-    """One series with a single retry. Short timeout so a dead source can't block the boot."""
-    fn = _fred if kind == "fred" else _yahoo
-    try:
-        return fn(key)
-    except Exception:
-        return fn(key)   # one retry; raises if it fails again
-
-
-def build_live(max_workers: int = 12) -> pd.DataFrame:
-    """Fetch every series CONCURRENTLY with short timeouts. Worst case ~2x the per-request
-    timeout, not (series x timeout x retries). A failed source is logged and skipped, not waited on."""
-    cfg = load_config()["data"]
-    jobs = {name: ("fred", sid) for sid, name in cfg["fred"].items()}
-    jobs.update({tk: ("yahoo", tk) for tk in cfg["yahoo"]})
-    cols = {}
-    with _cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futs = {ex.submit(_fetch_one, kind, key): name for name, (kind, key) in jobs.items()}
+def _retry(fn, *a, tries: int = 3, **k):
+    """Call fn with a few retries + backoff. Raises the last error if all fail."""
+    last = None
+    for i in range(tries):
         try:
-            for fut in _cf.as_completed(futs, timeout=FETCH_TIMEOUT * 4):
-                name = futs[fut]
-                try:
-                    cols[name] = fut.result(); log(f"{name} ok ({len(cols[name])})")
-                except Exception as e:
-                    log(f"{name} FAILED: {e}")
-        except _cf.TimeoutError:
-            log("some sources exceeded the global fetch window — proceeding with what arrived")
-    # resilience: if FRED VIX is missing, fall back to Yahoo ^VIX so a FRED outage isn't fatal
-    if "vix" not in cols or cols["vix"].dropna().empty:
-        try:
-            cols["vix"] = _yahoo("^VIX"); log("vix via Yahoo ^VIX fallback")
+            return fn(*a, **k)
         except Exception as e:
-            log(f"VIX fallback failed: {e}")
-    if not cols:
-        raise RuntimeError("All data sources failed — check network/firewall.")
+            last = e; time.sleep(1.2 * (i + 1))
+    raise last
+
+
+def build_live(max_workers: int = 8) -> pd.DataFrame:
+    """Yahoo-PRIMARY, FRED-optional. Yahoo is reliable from cloud runners and supplies the
+    critical macro series via index symbols (^VIX, ^VIX3M, ^TNX); FRED is best-effort extra.
+    Refuses to return a too-short / VIX-less panel so a transient fetch never commits garbage."""
+    cfg = load_config()["data"]
+    cols = {}
+    # --- Yahoo: ETFs/tickers + macro index symbols, concurrent, each with retries ---
+    ysyms = list(cfg["yahoo"]) + ["^VIX", "^VIX3M", "^TNX"]
+    with _cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(_retry, _yahoo, sym): sym for sym in ysyms}
+        for fut in _cf.as_completed(futs):
+            sym = futs[fut]
+            try:
+                cols[sym] = fut.result(); log(f"Yahoo {sym} ok ({len(cols[sym])})")
+            except Exception as e:
+                log(f"Yahoo {sym} FAILED: {e}")
+    # map index symbols -> standard names (these are the reliable primaries)
+    if "^VIX" in cols:   cols.setdefault("vix", cols["^VIX"])
+    if "^VIX3M" in cols: cols.setdefault("VIX3M", cols["^VIX3M"])
+    if "^TNX" in cols:   cols.setdefault("y10", cols["^TNX"] / 10.0)
+    for k in ("^VIX", "^VIX3M", "^TNX"):
+        cols.pop(k, None)
+    # --- FRED: best-effort, SEQUENTIAL with retry (its CSV endpoint throttles concurrency).
+    # Only fills series we don't already have from Yahoo (e.g. credit, y2, dollar, oil). ---
+    for sid, name in cfg["fred"].items():
+        if name in cols and not cols[name].dropna().empty:
+            continue
+        try:
+            cols[name] = _retry(_fred, sid, tries=2); log(f"FRED {sid} ok ({len(cols[name])})")
+        except Exception as e:
+            log(f"FRED {sid} skipped: {e}")
+    # --- validate: we MUST have VIX and enough history to train ---
+    if "vix" not in cols or cols["vix"].dropna().empty:
+        raise RuntimeError("no VIX from Yahoo (^VIX) or FRED — aborting live build")
     panel = pd.DataFrame(cols).sort_index()
-    panel = panel[panel.index >= "2000-01-01"]
-    panel = panel.ffill(limit=5)
+    panel = panel[panel.index >= "2000-01-01"].ffill(limit=5)
+    if len(panel) < 800:
+        raise RuntimeError(f"live panel too short ({len(panel)} rows) — likely a partial fetch")
     return panel
 
 
