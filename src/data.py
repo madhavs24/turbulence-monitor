@@ -25,8 +25,9 @@ LAST_SOURCE = {"value": None}
 
 
 import concurrent.futures as _cf
+import os
 
-FETCH_TIMEOUT = 10   # seconds per request (short — fail fast, fetch concurrently)
+FETCH_TIMEOUT = int(os.environ.get("DATA_FETCH_TIMEOUT", "10"))
 
 
 def _fred(series_id: str, timeout: int = FETCH_TIMEOUT) -> pd.Series:
@@ -42,8 +43,10 @@ def _fred(series_id: str, timeout: int = FETCH_TIMEOUT) -> pd.Series:
 
 def _yahoo(ticker: str, timeout: int = FETCH_TIMEOUT) -> pd.Series:
     sym = ticker.replace("^", "%5E")
+    # range=max returns ~monthly bars (median ~31d) — too few rows for calibration.
+    # 10y+1d yields ~2500 daily points, enough for rolling-252 features.
     url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
-           f"?range=max&interval=1d")
+           f"?range=10y&interval=1d")
     r = requests.get(url, headers=UA, timeout=timeout)
     r.raise_for_status()
     js = r.json()["chart"]["result"][0]

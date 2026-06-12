@@ -129,7 +129,7 @@ def _calibration(feats, signals):
 
 def build_snapshot(mode: str = "auto"):
     cfg = load_config()
-    panel = get_panel("synthetic" if mode == "synthetic" else "auto")
+    panel = get_panel("synthetic" if mode == "synthetic" else "live")
     feats = build_features(panel)
     signals = compute_all(feats, cfg)
     # news
