@@ -116,17 +116,22 @@ def snapshot_file():
 
 @app.get("/api/live/recent")
 def live_recent():
+    shock, sent = LIVE._display_gauges()
     return {"items": list(LIVE.recent)[-30:],
-            "gauges": {"sentiment": round(LIVE.sent_ewma, 3), "shock": round(LIVE.shock_ewma, 3)}}
+            "gauges": {"sentiment": sent, "shock": shock}}
 
 
 @app.get("/api/stream")
 async def stream(request: Request):
     q = await LIVE.bc.subscribe()
     async def gen():
-        # send a small backlog so a fresh page isn't empty
+        # pulse history first so the chart isn't flat on connect; then headline backlog
+        for ev in list(LIVE.pulse_history)[-40:]:
+            yield {"data": json.dumps(ev)}
         for ev in list(LIVE.recent)[-15:]:
             yield {"data": json.dumps(ev)}
+        if not LIVE.pulse_history:
+            yield {"data": json.dumps(LIVE._publish_pulse())}
         try:
             while True:
                 if await request.is_disconnected():

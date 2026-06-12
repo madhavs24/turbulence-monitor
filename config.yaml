@@ -40,6 +40,9 @@ risk:
 live_news:
   poll_secs: 3            # how often to poll RSS feeds (low-latency tier)
   pulse_secs: 1.5         # heartbeat cadence pushed to the dashboard
+  shock_decay: 0.97       # slower decay -> visible motion between headlines
+  sent_decay: 0.985
+  activity_secs: 300        # rolling headline window for live gauge blend
   window_min: 30          # rolling window for de-dup
   tentative_shock: 0.45   # instant, lower-confidence pulse
   confirm_shock: 0.60     # confirmed shock threshold

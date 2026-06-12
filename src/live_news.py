@@ -21,6 +21,7 @@ Run standalone (replay):  python -m src.live_news replay
 from __future__ import annotations
 import asyncio, time, re, datetime as dt
 from collections import deque, defaultdict
+from urllib.parse import urlparse
 
 import feedparser
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -58,6 +59,18 @@ def _source_weight(src: str) -> float:
     return 1.0
 
 
+def _outlet_key(source: str, url: str) -> str:
+    """Distinct outlet for breadth — prefer article host, not the RSS feed label."""
+    if url:
+        try:
+            host = urlparse(url).netloc.lower().replace("www.", "")
+            if host and "google.com" not in host and "news.google" not in host and "example.com" not in host:
+                return host
+        except Exception:
+            pass
+    return (source or "unknown").lower()
+
+
 class Broadcaster:
     """Minimal in-process pub/sub: each SSE client gets its own asyncio.Queue."""
     def __init__(self):
@@ -93,11 +106,16 @@ class LiveNews:
         self.tentative_thr = lc.get("tentative_shock", 0.45)
         self.confirm_thr = lc.get("confirm_shock", 0.60)
         self.confirm_breadth = lc.get("confirm_breadth", 3)
+        self.shock_decay = lc.get("shock_decay", 0.97)
+        self.sent_decay = lc.get("sent_decay", 0.985)
+        self.activity_secs = lc.get("activity_secs", 300)
         self.bc = Broadcaster()
         self.seen: dict[frozenset, float] = {}    # signature -> first-seen ts (de-dup)
-        self.stress_buf: deque = deque()          # (ts, source) of recent STRESSED items
+        self.stress_buf: deque = deque()          # (wall_ts, outlet) of recent STRESSED items
         self.sector_buf: dict = defaultdict(deque) # sector -> deque[(ts, source)]
         self.recent: deque = deque(maxlen=120)    # recent NewsEvents (for SSE backlog)
+        self.activity_buf: deque = deque(maxlen=300)  # (wall_ts, shock, sentiment) all headlines
+        self.pulse_history: deque = deque(maxlen=80)
         self.sent_ewma = 0.0
         self.shock_ewma = 0.0
         self.last_event_ts = 0.0
@@ -105,16 +123,19 @@ class LiveNews:
         self._etag: dict[str, str] = {}
 
     # ---- scoring ----------------------------------------------------------
-    def _score(self, title: str, summary: str, source: str, ts: float) -> dict:
+    def _score(self, title: str, summary: str, source: str, ts: float,
+               url: str = "", clock_ts: float | None = None) -> dict:
         text = f"{title}. {summary}"
         sent = VADER.polarity_scores(text)["compound"]            # -1..+1
         lex = stress_score(text)
-        # A real shock = a BURST of stressed coverage across many outlets in a short window
-        # (varied wording, same event). We measure that globally rather than by exact text.
+        # Live breadth/velocity use wall-clock ingest time so the pulse reflects what's
+        # hitting the wire now (RSS backlog items still carry honest ts_publish for display).
+        now = clock_ts if clock_ts is not None else ts
+        outlet = _outlet_key(source, url)
         if sent <= -0.25 or lex <= -2:
-            self.stress_buf.append((ts, source))
-        w10 = ts - 600     # breadth window: 10 min
-        w5 = ts - 300      # velocity window: 5 min
+            self.stress_buf.append((now, outlet))
+        w10 = now - 600     # breadth window: 10 min
+        w5 = now - 300      # velocity window: 5 min
         self.stress_buf = deque((t, s) for (t, s) in self.stress_buf if t >= w10)
         breadth = len({s for (t, s) in self.stress_buf})              # distinct outlets, 10m
         velocity = sum(1 for (t, s) in self.stress_buf if t >= w5)    # stressed items, 5m
@@ -131,7 +152,7 @@ class LiveNews:
         lead_sector = None
         if is_stress:
             for sec in (tags["sectors"] or []):
-                self.sector_buf[sec].append((ts, source))
+                self.sector_buf[sec].append((now, outlet))
         for sec, dq in list(self.sector_buf.items()):
             self.sector_buf[sec] = deque((t, s) for (t, s) in dq if t >= w10)
         if self.sector_buf:
@@ -159,10 +180,10 @@ class LiveNews:
         ts_publish = min(ts_publish, now)   # causal guard: never accept future-stamped news
         # de-dup: same signature seen recently -> still counts toward breadth, don't re-emit
         if sig in self.seen and now - self.seen[sig] < self.window_min * 60:
-            self._score(title, "", source, ts_publish)
+            self._score(title, "", source, ts_publish, url=url, clock_ts=now)
             return
         self.seen[sig] = now
-        sc = self._score(title, "", source, ts_publish)
+        sc = self._score(title, "", source, ts_publish, url=url, clock_ts=now)
         flagged = bool(INJECTION_PAT.search(title))
         ev = {"type": "news",
               "ts_publish": dt.datetime.utcfromtimestamp(ts_publish).isoformat() + "Z",
@@ -170,22 +191,47 @@ class LiveNews:
               "headline": title, "url": url or "", "source": source or "",
               "flagged": flagged, **sc}
         self.sent_ewma = 0.6 * sc["sentiment"] + 0.4 * self.sent_ewma
-        self.shock_ewma = max(self.shock_ewma, sc["shock"])   # jump on shock, decays in pulse
+        self.shock_ewma = max(self.shock_ewma, sc["shock"])
+        self.activity_buf.append((now, sc["shock"], sc["sentiment"]))
         self.last_event_ts = now
         self.recent.append(ev)
         self.bc.publish(ev)
+        self._publish_pulse()   # instant chart tick on each new headline
         return ev
+
+    def _display_gauges(self, now: float | None = None) -> tuple[float, float]:
+        """Blend decaying EWMA with rolling recent-headline activity (keeps pulse alive)."""
+        now = now or time.time()
+        cutoff = now - self.activity_secs
+        recent = [(t, sh, sn) for (t, sh, sn) in self.activity_buf if t >= cutoff]
+        if recent:
+            roll_shock = max(sh for _, sh, _ in recent)
+            roll_sent = sum(sn for _, _, sn in recent) / len(recent)
+            # honest baseline motion from headline flow (tone + scored stress), not fake noise
+            activity = min(0.4, 0.12 + 0.2 * sum(abs(sn) for _, _, sn in recent) / len(recent)
+                           + 0.35 * sum(sh for _, sh, _ in recent) / len(recent))
+            shock = max(self.shock_ewma, roll_shock, activity)
+            sent = 0.5 * self.sent_ewma + 0.5 * roll_sent
+        else:
+            shock, sent = self.shock_ewma, self.sent_ewma
+        return round(shock, 3), round(sent, 3)
+
+    def _publish_pulse(self):
+        shock, sent = self._display_gauges()
+        overlay_flare = round(min(1.0, 0.2 + 0.6 * shock), 3)
+        pulse = {"type": "pulse", "ts": dt.datetime.utcnow().isoformat() + "Z",
+                 "sentiment": sent, "shock": shock,
+                 "overlay_flare": overlay_flare, "n_recent": len(self.recent)}
+        self.pulse_history.append(pulse)
+        self.bc.publish(pulse)
+        return pulse
 
     # ---- pulse heartbeat --------------------------------------------------
     async def pulse_loop(self):
         while True:
-            self.shock_ewma *= 0.92      # decay toward calm so the heartbeat stays alive
-            self.sent_ewma *= 0.97
-            overlay_flare = round(min(1.0, 0.2 + 0.6 * self.shock_ewma), 3)  # Phase-4 stub
-            pulse = {"type": "pulse", "ts": dt.datetime.utcnow().isoformat() + "Z",
-                     "sentiment": round(self.sent_ewma, 3), "shock": round(self.shock_ewma, 3),
-                     "overlay_flare": overlay_flare, "n_recent": len(self.recent)}
-            self.bc.publish(pulse)
+            self.shock_ewma *= self.shock_decay
+            self.sent_ewma *= self.sent_decay
+            self._publish_pulse()
             await asyncio.sleep(self.pulse_secs)
 
     # ---- live RSS ---------------------------------------------------------

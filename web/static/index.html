@@ -357,16 +357,21 @@ function connectLive(){
   LIVE.es.onmessage=(e)=>{ let ev; try{ev=JSON.parse(e.data)}catch(_){return;}
     if(ev.type==='pulse') onPulse(ev); else if(ev.type==='news') onNews(ev); };
 }
-function onPulse(ev){
-  const t=new Date(ev.ts).toLocaleTimeString();
-  LIVE.labels.push(t); LIVE.shock.push(ev.shock); LIVE.sent.push(ev.sentiment);
+function pushLivePoint(shock, sentiment, ts){
+  const t=ts ? new Date(ts).toLocaleTimeString() : new Date().toLocaleTimeString();
+  LIVE.labels.push(t); LIVE.shock.push(shock); LIVE.sent.push(sentiment);
   while(LIVE.labels.length>LIVE.max){LIVE.labels.shift();LIVE.shock.shift();LIVE.sent.shift();}
   const sn=$('#shockNow'), se=$('#sentNow');
-  if(sn){sn.textContent=ev.shock.toFixed(2); sn.style.color=ev.shock>=0.6?'var(--high)':ev.shock>=0.3?'var(--watch)':'var(--calm)';}
-  if(se){se.textContent=(ev.sentiment>=0?'+':'')+ev.sentiment.toFixed(2);}
+  if(sn){
+    sn.textContent=shock<0.1 ? shock.toFixed(3) : shock.toFixed(2);
+    sn.style.color=shock>=0.6?'var(--high)':shock>=0.25?'var(--watch)':'var(--calm)';
+  }
+  if(se){se.textContent=(sentiment>=0?'+':'')+sentiment.toFixed(2);}
   if(LIVE.chart) LIVE.chart.update('none');
 }
+function onPulse(ev){ pushLivePoint(ev.shock, ev.sentiment, ev.ts); }
 function onNews(ev){
+  pushLivePoint(ev.shock, ev.sentiment, ev.ts_ingest || ev.ts_publish);
   const tick=$('#ticker'); if(!tick) return;
   const row=el('div','tkitem newpop');
   const badge=el('span','tier '+ev.tier, ev.tier);
