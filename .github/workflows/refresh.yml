@@ -33,11 +33,16 @@ jobs:
           DATA_FETCH_TIMEOUT: "30"
         run: |
           python -m tools.build_snapshot auto || (echo "retrying after partial fetch..." && sleep 10 && python -m tools.build_snapshot auto)
+      - name: Band-change email alerts
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ secrets.RESEND_FROM }}
+        run: python -m tools.notify_band_change
       - name: Commit if changed
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add web/static/snapshot.json
+          git add web/static/snapshot.json web/static/alert_state.json
           if git diff --staged --quiet; then
             echo "no change"
             exit 0

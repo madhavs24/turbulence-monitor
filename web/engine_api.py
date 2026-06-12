@@ -9,6 +9,9 @@ from src.features import build_features, FINGERPRINT
 from src.signals import compute_all
 from src.news import fetch_news, synthetic_news, news_summary
 from src.outlook import build_outlook
+from src.analogs import analogs
+from src.narrative import build_narrative
+import math
 from src.simulator import run as run_sim, STRATEGIES
 
 PRETTY = {"rv5": "Realized vol (1w)", "rv21": "Realized vol (1m)", "vix": "VIX (fear gauge)",
@@ -46,9 +49,18 @@ def _vitals(panel, feats):
         last = float(s.iloc[-1]); prev = float(s.iloc[-2])
         chg = last - prev
         pct = (chg / prev * 100) if (kind == "price" and prev) else None
+        verdict, range_lo, range_hi = "within normal range", None, None
+        if len(s) >= 60:
+            lo = float(s.tail(252).min()); hi = float(s.tail(252).max())
+            range_lo, range_hi = round(lo, 2), round(hi, 2)
+            if last <= lo * 1.02:
+                verdict = "near 1-year low"
+            elif last >= hi * 0.98:
+                verdict = "near 1-year high"
         out.append({"key": key, "label": label, "kind": kind,
                     "last": round(last, 2), "change": round(chg, 3),
                     "pct": round(pct, 2) if pct is not None else None,
+                    "range_lo": range_lo, "range_hi": range_hi, "verdict": verdict,
                     "spark": _series(s, 120)})
     return out
 
@@ -63,8 +75,12 @@ def _why(feats):
     for k in FINGERPRINT:
         if pd.isna(z[k]):
             continue
-        rows.append({"feature": PRETTY.get(k, k), "z": round(float(z[k]), 2),
-                     "dir": "high" if z[k] > 0 else "low",
+        zz = float(z[k]); az = abs(zz)
+        phrase = ("unusually " if az >= 2 else "somewhat " if az >= 1 else "")
+        phrase += ("high" if zz > 0 else "low") if az >= 1 else "around normal"
+        pct = round(50 * (1 + math.erf(zz / (2 ** 0.5))))   # percentile vs its own year
+        rows.append({"feature": PRETTY.get(k, k), "z": round(zz, 2),
+                     "dir": "high" if zz > 0 else "low", "plain": phrase, "pct": pct,
                      "value": round(float(feats[k].iloc[-1]), 3)})
     rows.sort(key=lambda r: abs(r["z"]), reverse=True)
     return rows[:5]
@@ -185,6 +201,9 @@ def build_snapshot(mode: str = "auto"):
         "mode": mode,
         "data_source": LAST_SOURCE["value"] or mode,
     }
+    ana = analogs(feats)
+    snap["analogs"] = ana
+    snap["narrative"] = build_narrative(feats, signals, outlook, news, ana)
     return snap, feats, signals
 
 

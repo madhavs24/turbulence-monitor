@@ -17,7 +17,7 @@
     Turbulence&nbsp;Monitor <small id="modeTag"></small></div>
   <nav class="nav">
     <a href="#today">Today</a><a href="#vitals">Vitals</a><a href="#news">News</a>
-    <a href="#why">Why</a><a href="#anom">Anomalies</a><a href="#play">Playground</a><a href="#record">Track record</a>
+    <a href="#why">Why</a><a href="#analogs">Analogs</a><a href="#anom">Anomalies</a><a href="#play">Playground</a><a href="#record">Track record</a>
   </nav>
   <span class="updated" id="updated"></span>
 </div></header>
@@ -27,13 +27,21 @@
   <div class="card" id="liveCard">
     <div class="livehead">
       <span class="livedot" id="liveDot">●</span>
-      <b>Heartbeat</b>
-      <span class="shockread">shock <b id="shockNow" style="color:var(--high)">0.00</b> · news sentiment <b id="sentNow">0.00</b></span>
+      <span class="stressidx"><b id="stressIdx" style="color:var(--calm)">0</b><small>/100 stress</small></span>
+      <span class="tier" id="confirmBadge" style="display:none"></span>
       <span class="faint" id="liveStatus" style="margin-left:auto;font-size:12px">connecting…</span>
     </div>
+    <div class="readrow">
+      <span>VIX <b id="vixNow">–</b> <span id="vixChg" class="faint"></span></span>
+      <span>S&amp;P <b id="spyChg">–</b></span>
+      <span>shock <b id="shockNow">0.00</b></span>
+      <span>sentiment <b id="sentNow">0.00</b></span>
+      <span class="faint" id="corrob">–</span>
+    </div>
     <div class="chart-wrap chart-wrap--live"><canvas id="liveChart"></canvas></div>
+    <div class="sectorstrip" id="sectorStrip"></div>
     <div class="ticker" id="ticker"></div>
-    <div class="faint" style="margin-top:8px">Detects a BURST of stressed coverage across outlets (any topic) and pulses the gauge. Tentative = instant low-confidence; Confirmed = breadth-verified shock. Narrative stress, not a price call.</div>
+    <div class="faint" style="margin-top:8px">Stress Index blends news shock, the live market move (VIX/S&amp;P, ~15-min delayed) and source breadth. <b>Agree</b> = news and market both moving; <b>News only</b> = market hasn't confirmed (likely noise). Narrative + market stress, not a price call.</div>
   </div>
 </section>
 
@@ -80,7 +88,7 @@ function render(d){
   destroyCharts();
   const app=$('#app'); app.innerHTML='';
   app.append(heroSection(d), vitalsSection(d), newsSection(d), whySection(d),
-             anomSection(d), playSection(d), recordSection(d));
+             analogSection(d), anomSection(d), playSection(d), recordSection(d));
   drawVitals(d); drawCalibration(d); runPlay();   // initial playground
 }
 
@@ -94,6 +102,8 @@ function heroSection(d){
   hero.append(el('div','band-name',`${o.turbulence_band} · turbulence outlook`));
   hero.append(el('h1', null, o.title || o.headline));
   hero.append(el('div','headline muted', o.subtitle || 'Best-guess read for the next ~5 trading days.'));
+  const N=d.narrative||{};
+  if(N.means_for_you){ const mf=el('div','', N.means_for_you); mf.style.cssText='margin-top:12px;font-size:15px;font-weight:600;max-width:640px'; hero.append(mf); }
   const g=el('div','gaugewrap');
   g.append(el('div','', `<div class="bigpct">${o.flare_prob_pct??'–'}%</div>
      <div class="faint">best-guess chance next week is unusually choppy</div>`));
@@ -104,7 +114,17 @@ function heroSection(d){
   add('VIX', o.vix + (o.vix_vs_1y_median!=null?` (${o.vix_vs_1y_median>=0?'+':''}${o.vix_vs_1y_median} vs 1y med)`:''));
   add('Anomaly', o.anomaly.flagged?'TRIGGERED':'quiet');
   add('Confidence', Math.round(o.confidence*100)+'%');
+  if(N.reality_check) add('Reality', {real:'news+market real',noise:'likely noise',quiet_stress:'quiet stress',calm:'calm',no_news:'no news'}[N.reality_check.state]||N.reality_check.state);
+  if(N.changed) add('vs last week', (N.changed.delta_pts>=0?'+':'')+N.changed.delta_pts+'pts '+N.changed.dir);
   g.append(chips); hero.append(g);
+  const sub=el('div','subscribe');
+  sub.innerHTML=`<form name="band-alerts" method="POST" data-netlify="true" netlify-honeypot="bot-field" action="/">
+    <input type="hidden" name="form-name" value="band-alerts">
+    <p class="faint" hidden><label>Don't fill this out: <input name="bot-field"></label></p>
+    <p class="faint">Notify me when turbulence shifts (e.g. Calm → Elevated). Email only — not investment advice.</p>
+    <div class="subrow"><input type="email" name="email" required placeholder="you@example.com" aria-label="Email for band alerts">
+    <button type="submit" class="btn btn-sm">Notify me</button></div></form>`;
+  hero.append(sub);
   s.append(hero); return s;
 }
 
@@ -120,6 +140,7 @@ function vitalsSection(d){
     card.append(el('div','lab',v.label));
     card.append(el('div','val',v.last));
     card.append(el('div','chg '+(up?'up':'down'),chg));
+    if(v.verdict) card.append(el('div','faint vital-verdict', v.verdict + (v.range_lo!=null?` · 1y range ${v.range_lo}–${v.range_hi}`:'')));
     const wrap=el('div','spark-wrap'); const cv=el('canvas'); cv.id='spk_'+v.key; wrap.append(cv); card.append(wrap);
     grid.append(card);
   });
@@ -145,7 +166,11 @@ function drawVitals(d){
 function newsSection(d){
   const s=el('section'); s.id='news';
   s.append(el('p','h','Live news · what we detected & predicted'));
-  const n=d.news, sum=n.summary, ctx=n.context||{};
+  const n=d.news, sum=n.summary, ctx=n.context||{}, Nar=d.narrative||{};
+  if(Nar.verdict){
+    const vc=Nar.reality_check&&Nar.reality_check.line?` ${Nar.reality_check.line}`:'';
+    s.append(el('div','banner ok', `<b>Today's read:</b> ${Nar.verdict}${vc}`));
+  }
   // detection -> prediction tie block (the feature you asked for)
   const detect = ctx.anomaly_active ? 'an <b>anomaly</b> in today’s conditions'
                : (d.outlook.turbulence_band==='Elevated'||d.outlook.turbulence_band==='High')
@@ -192,13 +217,41 @@ function whySection(d){
     f.style.left=w.dir==='high'?'50%':(50-pct/2)+'%';
     if(w.dir==='low'){f.style.left='auto';f.style.right='50%';}
     track.append(f); b.append(track);
-    b.append(el('div','',`${w.z>0?'+':''}${w.z}σ`));
+    b.append(el('div','',`<span title="${w.z>0?'+':''}${w.z}σ">${w.plain||''}${w.pct!=null?` · ${w.pct}th pct`:''}</span>`));
     bars.append(b);
   });
   card.append(bars);
   const note=el('div','faint','Each bar shows how far today sits from its 1-year normal (σ). Right = unusually high · left = unusually low.');
   note.style.marginTop='12px'; card.append(note);
   s.append(card); return s;
+}
+
+/* 4.5 — HISTORICAL ANALOGS */
+function analogSection(d){
+  const s=el('section'); s.id='analogs';
+  s.append(el('p','h','What usually happened next · historical analogs'));
+  const a=d.analogs, card=el('div','card');
+  if(!a||!a.n||!a.outcome){ card.append(el('div','muted','Not enough history to find analogs yet.')); s.append(card); return s; }
+  const dates=a.analogs.map(x=>`${x.date} <span class="faint">(${x.similarity}% alike)</span>`).join(' · ');
+  card.append(el('div','',`<b>Today's market most resembles:</b> ${dates}`));
+  const o=a.outcome;
+  card.append(el('div','muted',`In the ${o.n} most similar past days, here's what the S&P 500 did over the following month:`));
+  const pill=(lab,v,col)=>`<span class="chip"><b style="color:${col}">${v>0?'+':''}${v}%</b> <span class="faint">${lab}</span></span>`;
+  const fan=el('div','chips'); fan.style.marginTop='8px';
+  fan.innerHTML=pill('worst',o.worst,'var(--high)')+pill('25th',o.p25,'var(--watch)')+pill('median',o.median,'var(--ink)')+pill('75th',o.p75,'var(--calm)')+pill('best',o.best,'var(--calm)');
+  card.append(fan);
+  card.append(el('div','faint',`It was negative a month later ${Math.round(o.share_down*100)}% of the time, and fell more than 5% in ${Math.round(o.share_down5*100)}% of cases.`));
+  if(d.narrative&&d.narrative.nudge) card.append(el('div','banner ok', d.narrative.nudge));
+  const pr=el('div','card'); pr.style.cssText='background:var(--bg2);margin-top:12px';
+  pr.innerHTML=`<b>What would a week like this mean for your money?</b>
+    <div class="controls" style="margin-top:8px"><div><label>Your stock holdings ($)</label>
+    <input id="prAmt" type="number" value="10000" step="1000"></div></div><div id="prOut" class="muted"></div>`;
+  card.append(pr); s.append(card);
+  setTimeout(()=>{ const f=()=>{ const amt=+($('#prAmt')?.value||0);
+    const med=amt*o.median/100, worst=amt*o.worst/100, out=$('#prOut');
+    if(out) out.innerHTML=`Typically a month later: <b>${med>=0?'+':''}$${Math.round(med).toLocaleString()}</b> · worst similar case: <b style="color:var(--high)">-$${Math.abs(Math.round(worst)).toLocaleString()}</b> <span class="faint">(based on history, not a forecast)</span>`; };
+    const i=$('#prAmt'); if(i) i.oninput=f; f(); },0);
+  return s;
 }
 
 /* 5 — ANOMALIES */
@@ -311,6 +364,16 @@ function recordSection(d){
   const c=d.calibration;
   const card=el('div','card');
   if(!c.n){card.append(el('div','muted','Not enough data to score yet.'));s.append(card);return s;}
+  let calPlain='';
+  if(c.bins&&c.bins.length){
+    const mid=c.bins.find(b=>parseInt(b.bucket,10)>=55)||c.bins[Math.floor(c.bins.length/2)];
+    if(mid) calPlain=`When we said about ${mid.bucket} chance of a choppy week, it was choppy ${Math.round(mid.actual)}% of the time — our percentages mean what they say. `;
+  }
+  if(c.auc!=null&&c.vix_auc!=null){
+    const edge=c.auc>c.vix_auc?'modestly better than':'similar to';
+    calPlain+=`Our flare signal (AUC ${c.auc}) is ${edge} VIX alone (${c.vix_auc}) — useful, not a crystal ball.`;
+  }
+  if(calPlain) card.append(el('div','',calPlain));
   card.append(el('div','',`<div class="chips">
     <span class="chip">Our flare model AUC <b>${c.auc??'–'}</b></span>
     <span class="chip">VIX-only rule AUC <b>${c.vix_auc??'–'}</b></span>
@@ -334,7 +397,7 @@ function drawCalibration(d){
 }
 
 /* ---- LIVE PULSE (SSE, persistent; independent of the daily snapshot) ---- */
-const LIVE={chart:null, labels:[], shock:[], sent:[], max:80, es:null};
+const LIVE={chart:null, labels:[], shock:[], idx:[], sent:[], max:80, es:null};
 function setLiveDot(on,txt){ const d=$('#liveDot'),st=$('#liveStatus');
   if(d){d.classList.toggle('on',on);} if(st){st.textContent=txt||(on?'live ●':'reconnecting…');} }
 function initLive(){
@@ -342,6 +405,7 @@ function initLive(){
   LIVE.chart=new Chart(ctx,{type:'line',data:{labels:LIVE.labels,datasets:[
     {label:'Shock',data:LIVE.shock,borderColor:'#ef4d5a',backgroundColor:'rgba(239,77,90,.16)',
      fill:true,pointRadius:0,tension:.35,yAxisID:'y'},
+    {label:'Stress index',data:LIVE.idx,borderColor:'#f5b942',borderWidth:2,pointRadius:0,tension:.35,yAxisID:'y'},
     {label:'News sentiment',data:LIVE.sent,borderColor:'#6aa8ff',pointRadius:0,tension:.35,yAxisID:'y2'}]},
     options:{plugins:{legend:{labels:{color:'#cdd7f0',boxWidth:12}}},
       scales:{x:{display:false},
@@ -357,10 +421,11 @@ function connectLive(){
   LIVE.es.onmessage=(e)=>{ let ev; try{ev=JSON.parse(e.data)}catch(_){return;}
     if(ev.type==='pulse') onPulse(ev); else if(ev.type==='news') onNews(ev); };
 }
-function pushLivePoint(shock, sentiment, ts){
+function pushLivePoint(shock, sentiment, ts, idx){
   const t=ts ? new Date(ts).toLocaleTimeString() : new Date().toLocaleTimeString();
   LIVE.labels.push(t); LIVE.shock.push(shock); LIVE.sent.push(sentiment);
-  while(LIVE.labels.length>LIVE.max){LIVE.labels.shift();LIVE.shock.shift();LIVE.sent.shift();}
+  LIVE.idx.push(idx!=null?idx/100:null);
+  while(LIVE.labels.length>LIVE.max){LIVE.labels.shift();LIVE.shock.shift();LIVE.sent.shift();LIVE.idx.shift();}
   const sn=$('#shockNow'), se=$('#sentNow');
   if(sn){
     sn.textContent=shock<0.1 ? shock.toFixed(3) : shock.toFixed(2);
@@ -369,7 +434,23 @@ function pushLivePoint(shock, sentiment, ts){
   if(se){se.textContent=(sentiment>=0?'+':'')+sentiment.toFixed(2);}
   if(LIVE.chart) LIVE.chart.update('none');
 }
-function onPulse(ev){ pushLivePoint(ev.shock, ev.sentiment, ev.ts); }
+function onPulse(ev){
+  pushLivePoint(ev.shock, ev.sentiment, ev.ts, ev.stress_index);
+  const set=(id,v)=>{const e=$('#'+id); if(e) e.textContent=v;};
+  const si=$('#stressIdx');
+  if(si){ si.textContent=ev.stress_index!=null?ev.stress_index:0;
+    si.style.color=ev.stress_index>=60?'var(--high)':ev.stress_index>=30?'var(--watch)':'var(--calm)'; }
+  const cb=$('#confirmBadge');
+  if(cb && ev.confirm){ const map={agree:['NEWS + MARKET AGREE','confirmed'],diverge:['NEWS ONLY','tentative'],
+      market_only:['MARKET MOVING','tentative'],calm:['CALM','low']}; const m=map[ev.confirm]||['',''];
+    cb.textContent=m[0]; cb.className='tier '+m[1]; cb.style.display=m[0]?'':'none'; }
+  set('vixNow', ev.vix!=null?ev.vix:'–');
+  const vc=$('#vixChg'); if(vc) vc.textContent = ev.vix_chg!=null?`(${ev.vix_chg>=0?'+':''}${ev.vix_chg}%)`:'';
+  set('spyChg', ev.spy_chg!=null?`${ev.spy_chg>=0?'+':''}${ev.spy_chg}%`:'–');
+  set('corrob', ev.breadth!=null?`${ev.breadth} outlet(s) · ${ev.velocity}/5min`:'–');
+  const ss=$('#sectorStrip');
+  if(ss){ ss.innerHTML=(ev.sectors||[]).map(x=>`<span class="sbar"><span class="sbartrack"><span class="sfill" style="width:${Math.round(x.heat*100)}%"></span></span><small>${x.s}</small></span>`).join(''); }
+}
 function onNews(ev){
   pushLivePoint(ev.shock, ev.sentiment, ev.ts_ingest || ev.ts_publish);
   const tick=$('#ticker'); if(!tick) return;

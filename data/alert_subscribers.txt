@@ -1,0 +1,2 @@
+# One email per line. Add addresses from Netlify form submissions (band-alerts).
+# GitHub Action sends band-shift alerts via Resend when RESEND_API_KEY is set.
