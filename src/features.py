@@ -34,8 +34,20 @@ def build_features(panel: pd.DataFrame) -> pd.DataFrame:
     else:
         f["credit"] = np.nan
         f["credit_mom"] = np.nan
-    f["curve"] = (panel["y10"] - panel["y2"]).astype(float) if "y10" in panel and "y2" in panel else np.nan
-    f["dollar_ret"] = panel["dollar"].ffill().pct_change(5) if "dollar" in panel else np.nan
+    if "y10" in panel and "y2" in panel:
+        f["curve"] = (panel["y10"] - panel["y2"]).astype(float)
+    elif "y10" in panel:
+        # Yahoo-only: no 2y yield — proxy curve from 10y momentum (still causal)
+        f["curve"] = panel["y10"].astype(float).diff(21)
+    else:
+        f["curve"] = np.nan
+    if "dollar" in panel:
+        f["dollar_ret"] = panel["dollar"].ffill().pct_change(5)
+    elif "USO" in panel:
+        # No dollar index — crude as a rough risk-proxy placeholder (0-centered)
+        f["dollar_ret"] = panel["USO"].ffill().pct_change(5)
+    else:
+        f["dollar_ret"] = 0.0
     f["oil_ret"] = panel["oil"].ffill().pct_change(5) if "oil" in panel else np.nan
     f["vix_med"] = f["vix"].rolling(252, min_periods=120).median()
     return f
