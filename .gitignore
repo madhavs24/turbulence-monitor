@@ -17,3 +17,6 @@ knowledge/failure_log.md
 .cursor/
 .DS_Store
 .vscode/
+
+# Local Netlify folder
+.netlify
