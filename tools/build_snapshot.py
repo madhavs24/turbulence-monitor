@@ -23,6 +23,13 @@ OUT = ROOT / "web" / "static" / "snapshot.json"
 
 def main(mode: str = "auto"):
     snap, feats, signals = build_snapshot(mode)
+    if mode != "synthetic":
+        c = snap.get("calibration", {})
+        flare = snap.get("outlook", {}).get("flare_prob_pct")
+        if c.get("n", 0) == 0 or flare is None:
+            log(f"REFUSED degraded snapshot: data_source={snap.get('data_source')} "
+                f"flare={flare} calibration_n={c.get('n')}")
+            sys.exit(1)
     snap["sim"] = sim_payload(feats, signals,
                               start=snap.get("sim_default") and "2012-01-01" or "2012-01-01")
     snap["generated_at"] = dt.datetime.utcnow().isoformat() + "Z"

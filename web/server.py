@@ -16,7 +16,8 @@ from src.live_news import LiveNews
 
 LIVE = LiveNews()
 LIVE_MODE = os.environ.get("LIVE_NEWS_MODE", "live")   # 'live' RSS, or 'replay' (offline)
-SSE_ONLY = os.environ.get("SSE_ONLY", "").lower() in ("1", "true", "yes")
+SSE_ONLY = os.environ.get("SSE_ONLY", "0") == "1"
+STATIC_FIRST_MSG = "static-first: use the committed snapshot.json"
 VERSION = "1.0.0"
 APP_ID = "market-turbulence-monitor"
 SNAPSHOT_FILE = Path(__file__).resolve().parent / "static" / "snapshot.json"
@@ -49,6 +50,8 @@ STATIC = Path(__file__).resolve().parent / "static"
 
 @app.get("/api/snapshot")
 def snapshot():
+    if SSE_ONLY:
+        return JSONResponse({"ready": False, "error": STATIC_FIRST_MSG}, status_code=503)
     snap, updated, err = STORE.get()
     if snap is None:
         return JSONResponse({"ready": False, "error": err}, status_code=503)
@@ -58,6 +61,8 @@ def snapshot():
 @app.get("/api/papertrade")
 def papertrade(strategies: str = Query(",".join(STRATEGIES)),
                start: str = "2012-01-01", cash: float = 10000.0):
+    if SSE_ONLY:
+        return JSONResponse({"error": STATIC_FIRST_MSG}, status_code=503)
     feats, signals = STORE.engine()
     if feats is None:
         return JSONResponse({"error": "engine not ready"}, status_code=503)
@@ -92,7 +97,8 @@ def health():
     return {"ok": snap is not None, "app": APP_ID, "version": VERSION,
             "data_source": (snap or {}).get("data_source"),
             "turb_mode": os.environ.get("TURB_MODE", "auto"),
-            "live_news_mode": LIVE_MODE, "updated": updated, "error": err}
+            "live_news_mode": LIVE_MODE, "sse_only": False,
+            "updated": updated, "error": err}
 
 
 @app.get("/api/version")

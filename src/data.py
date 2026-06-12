@@ -12,7 +12,7 @@ Design notes:
     is runnable and testable without network access.
 """
 from __future__ import annotations
-import io, time
+import io, os, time
 import numpy as np
 import pandas as pd
 import requests
@@ -26,7 +26,7 @@ LAST_SOURCE = {"value": None}
 
 import concurrent.futures as _cf
 
-FETCH_TIMEOUT = 10   # seconds per request (short — fail fast, fetch concurrently)
+FETCH_TIMEOUT = int(os.environ.get("DATA_FETCH_TIMEOUT", "10"))
 
 
 def _fred(series_id: str, timeout: int = FETCH_TIMEOUT) -> pd.Series:
@@ -71,7 +71,7 @@ def build_live(max_workers: int = 12) -> pd.DataFrame:
     with _cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = {ex.submit(_fetch_one, kind, key): name for name, (kind, key) in jobs.items()}
         try:
-            for fut in _cf.as_completed(futs, timeout=FETCH_TIMEOUT * 3):
+            for fut in _cf.as_completed(futs, timeout=FETCH_TIMEOUT * 4):
                 name = futs[fut]
                 try:
                     cols[name] = fut.result(); log(f"{name} ok ({len(cols[name])})")
