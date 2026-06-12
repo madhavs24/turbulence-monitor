@@ -405,7 +405,7 @@ function initLive(){
   LIVE.chart=new Chart(ctx,{type:'line',data:{labels:LIVE.labels,datasets:[
     {label:'Shock',data:LIVE.shock,borderColor:'#ef4d5a',backgroundColor:'rgba(239,77,90,.16)',
      fill:true,pointRadius:0,tension:.35,yAxisID:'y'},
-    {label:'Stress index',data:LIVE.idx,borderColor:'#f5b942',borderWidth:2,pointRadius:0,tension:.35,yAxisID:'y'},
+    {label:'Stress index',data:LIVE.idx,borderColor:'#f5b942',borderWidth:2,pointRadius:0,tension:.35,yAxisID:'y',spanGaps:true},
     {label:'News sentiment',data:LIVE.sent,borderColor:'#6aa8ff',pointRadius:0,tension:.35,yAxisID:'y2'}]},
     options:{plugins:{legend:{labels:{color:'#cdd7f0',boxWidth:12}}},
       scales:{x:{display:false},
@@ -424,7 +424,7 @@ function connectLive(){
 function pushLivePoint(shock, sentiment, ts, idx){
   const t=ts ? new Date(ts).toLocaleTimeString() : new Date().toLocaleTimeString();
   LIVE.labels.push(t); LIVE.shock.push(shock); LIVE.sent.push(sentiment);
-  LIVE.idx.push(idx!=null?idx/100:null);
+  LIVE.idx.push(idx!=null?idx/100:0);
   while(LIVE.labels.length>LIVE.max){LIVE.labels.shift();LIVE.shock.shift();LIVE.sent.shift();LIVE.idx.shift();}
   const sn=$('#shockNow'), se=$('#sentNow');
   if(sn){
@@ -452,7 +452,6 @@ function onPulse(ev){
   if(ss){ ss.innerHTML=(ev.sectors||[]).map(x=>`<span class="sbar"><span class="sbartrack"><span class="sfill" style="width:${Math.round(x.heat*100)}%"></span></span><small>${x.s}</small></span>`).join(''); }
 }
 function onNews(ev){
-  pushLivePoint(ev.shock, ev.sentiment, ev.ts_ingest || ev.ts_publish);
   const tick=$('#ticker'); if(!tick) return;
   const row=el('div','tkitem newpop');
   const badge=el('span','tier '+ev.tier, ev.tier);

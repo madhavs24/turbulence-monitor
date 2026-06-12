@@ -109,7 +109,9 @@ class LiveNews:
         self.shock_decay = lc.get("shock_decay", 0.97)
         self.sent_decay = lc.get("sent_decay", 0.985)
         self.activity_secs = lc.get("activity_secs", 300)
+        self.market_poll_secs = lc.get("market_poll_secs", 60)
         self.bc = Broadcaster()
+        self.market: dict = {"vix": None, "vix_chg": None, "spy_chg": None, "ts": 0.0}
         self.seen: dict[frozenset, float] = {}    # signature -> first-seen ts (de-dup)
         self.stress_buf: deque = deque()          # (wall_ts, outlet) of recent STRESSED items
         self.sector_buf: dict = defaultdict(deque) # sector -> deque[(ts, source)]
@@ -216,11 +218,76 @@ class LiveNews:
             shock, sent = self.shock_ewma, self.sent_ewma
         return round(shock, 3), round(sent, 3)
 
+    def _breadth_velocity(self, now: float | None = None) -> tuple[int, int]:
+        now = now or time.time()
+        w10, w5 = now - 600, now - 300
+        buf = [(t, s) for (t, s) in self.stress_buf if t >= w10]
+        breadth = len({s for (t, s) in buf})
+        velocity = sum(1 for (t, _) in buf if t >= w5)
+        return breadth, velocity
+
+    def _market_stress(self) -> float:
+        """0..1 from live VIX level + intraday moves (~15-min delayed Yahoo)."""
+        m = self.market
+        parts: list[float] = []
+        if m.get("vix_chg") is not None:
+            parts.append(min(1.0, abs(m["vix_chg"]) / 4.0))
+        if m.get("spy_chg") is not None:
+            parts.append(min(1.0, abs(m["spy_chg"]) / 1.2))
+        if m.get("vix") is not None:
+            parts.append(min(0.55, max(0.0, (m["vix"] - 14) / 30)))
+        return max(parts) if parts else 0.0
+
+    def _stress_index(self, shock: float, breadth: int, velocity: int) -> int:
+        mkt = self._market_stress()
+        b_n = min(1.0, breadth / 4)
+        v_n = min(1.0, velocity / 5)
+        if mkt > 0 or self.market.get("vix") is not None:
+            raw = 0.38 * shock + 0.32 * mkt + 0.18 * b_n + 0.12 * v_n
+        else:
+            raw = 0.55 * shock + 0.28 * b_n + 0.17 * v_n
+        return int(round(100 * min(1.0, raw)))
+
+    def _confirm_verdict(self, shock: float, market_stress: float) -> str:
+        news_up = shock >= 0.22
+        mkt_up = market_stress >= 0.25
+        if news_up and mkt_up:
+            return "agree"
+        if news_up and not mkt_up:
+            return "diverge"
+        if not news_up and mkt_up:
+            return "market_only"
+        return "calm"
+
+    def _sector_heatmap(self, now: float | None = None) -> list[dict]:
+        now = now or time.time()
+        w10 = now - 600
+        out = []
+        for sec, dq in self.sector_buf.items():
+            active = [(t, s) for (t, s) in dq if t >= w10]
+            if not active:
+                continue
+            heat = min(1.0, len({s for _, s in active}) / max(1, self.confirm_breadth))
+            out.append({"s": sec, "heat": round(heat, 2)})
+        out.sort(key=lambda x: -x["heat"])
+        return out[:5]
+
     def _publish_pulse(self):
-        shock, sent = self._display_gauges()
+        now = time.time()
+        shock, sent = self._display_gauges(now)
+        breadth, velocity = self._breadth_velocity(now)
+        mkt = self._market_stress()
+        stress_index = self._stress_index(shock, breadth, velocity)
         overlay_flare = round(min(1.0, 0.2 + 0.6 * shock), 3)
         pulse = {"type": "pulse", "ts": dt.datetime.utcnow().isoformat() + "Z",
                  "sentiment": sent, "shock": shock,
+                 "stress_index": stress_index,
+                 "confirm": self._confirm_verdict(shock, mkt),
+                 "vix": self.market.get("vix"),
+                 "vix_chg": self.market.get("vix_chg"),
+                 "spy_chg": self.market.get("spy_chg"),
+                 "breadth": breadth, "velocity": velocity,
+                 "sectors": self._sector_heatmap(now),
                  "overlay_flare": overlay_flare, "n_recent": len(self.recent)}
         self.pulse_history.append(pulse)
         self.bc.publish(pulse)
@@ -233,6 +300,50 @@ class LiveNews:
             self.sent_ewma *= self.sent_decay
             self._publish_pulse()
             await asyncio.sleep(self.pulse_secs)
+
+    # ---- live market (VIX / SPY, ~15-min delayed) ------------------------
+    async def _fetch_quote(self, session, symbol: str) -> dict | None:
+        sym = symbol.replace("^", "%5E")
+        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}"
+               f"?range=1d&interval=5m")
+        try:
+            async with session.get(url, headers=UA,
+                                   timeout=aiohttp.ClientTimeout(total=8)) as r:
+                if r.status != 200:
+                    return None
+                js = await r.json()
+                result = (js.get("chart") or {}).get("result")
+                if not result:
+                    return None
+                meta = result[0].get("meta") or {}
+                price = meta.get("regularMarketPrice") or meta.get("previousClose")
+                chg = meta.get("regularMarketChangePercent")
+                if chg is None and price and meta.get("chartPreviousClose"):
+                    prev = meta["chartPreviousClose"]
+                    chg = (price - prev) / prev * 100 if prev else None
+                return {"price": round(float(price), 2) if price is not None else None,
+                        "chg_pct": round(float(chg), 2) if chg is not None else None}
+        except Exception:
+            return None
+
+    async def market_loop(self):
+        if aiohttp is None:
+            return
+        async with aiohttp.ClientSession() as session:
+            while True:
+                try:
+                    vix_q, spy_q = await asyncio.gather(
+                        self._fetch_quote(session, "^VIX"),
+                        self._fetch_quote(session, "SPY"))
+                    if vix_q:
+                        self.market["vix"] = vix_q["price"]
+                        self.market["vix_chg"] = vix_q["chg_pct"]
+                    if spy_q:
+                        self.market["spy_chg"] = spy_q["chg_pct"]
+                    self.market["ts"] = time.time()
+                except Exception as ex:
+                    log(f"live market err: {ex}")
+                await asyncio.sleep(self.market_poll_secs)
 
     # ---- live RSS ---------------------------------------------------------
     async def _fetch(self, session, url):
@@ -296,7 +407,8 @@ class LiveNews:
 
     async def run(self, mode: str = "live", **kw):
         self.running = True
-        tasks = [asyncio.create_task(self.pulse_loop())]
+        tasks = [asyncio.create_task(self.pulse_loop()),
+                 asyncio.create_task(self.market_loop())]
         if mode == "replay":
             tasks.append(asyncio.create_task(self.replay_loop(kw.get("speed", 1.0))))
         else:

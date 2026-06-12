@@ -179,6 +179,9 @@ svb = LiveNews(CFG)._score("Silicon Valley Bank collapses as depositors flee", "
 neu = LiveNews(CFG)._score("Company declares routine quarterly dividend in line with guidance", "", "Reuters", time.time())
 check("SVB-collapse headline raises a shock (tier != low)", svb['tier'] != 'low', f"tier={svb['tier']} shock={svb['shock']}")
 check("neutral headline stays low (no false shock)", neu['tier'] == 'low', f"tier={neu['tier']} shock={neu['shock']}")
+p = ln._publish_pulse()
+check("pulse includes stress_index + confirm", isinstance(p.get('stress_index'), int) and p.get('confirm') in ('agree','diverge','market_only','calm'),
+      f"stress_index={p.get('stress_index')} confirm={p.get('confirm')}")
 
 print("\n"+"="*70)
 print(f"RESULT: {len(PASS)} passed, {len(FAIL)} failed")

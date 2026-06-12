@@ -43,6 +43,7 @@ live_news:
   shock_decay: 0.97       # slower decay -> visible motion between headlines
   sent_decay: 0.985
   activity_secs: 300        # rolling headline window for live gauge blend
+  market_poll_secs: 60      # VIX/SPY refresh for Stress Index + confirm badge
   window_min: 30          # rolling window for de-dup
   tentative_shock: 0.45   # instant, lower-confidence pulse
   confirm_shock: 0.60     # confirmed shock threshold
